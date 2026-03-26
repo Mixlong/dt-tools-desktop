@@ -1,0 +1,75 @@
+name: Windows Tauri Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_to_oss:
+        description: "Publish to OSS after build"
+        required: true
+        default: false
+        type: boolean
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+      - run: pnpm install --no-frozen-lockfile
+      - shell: bash
+        run: |
+          node -e "const fs=require('fs');const p='src-tauri/tauri.conf.json';const j=JSON.parse(fs.readFileSync(p,'utf8'));j.bundle=j.bundle||{};j.bundle.targets=['nsis'];fs.writeFileSync(p,JSON.stringify(j,null,2)+'\n');"
+      - env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: pnpm tauri build --target x86_64-pc-windows-msvc --bundles nsis
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-nsis
+          path: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/**
+          if-no-files-found: ignore
+      - if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_to_oss == true }}
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://gosspublic.alicdn.com/ossutil/1.7.16/ossutil64.zip" -OutFile "ossutil64.zip"
+          Expand-Archive -Path "ossutil64.zip" -DestinationPath "."
+          Get-ChildItem -Recurse -Path "." | Where-Object { $_.Name -eq "ossutil64.exe" } | Select-Object -First 1 | ForEach-Object { $_.FullName } > ossutil_path.txt
+      - if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_to_oss == true }}
+        shell: pwsh
+        env:
+          OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
+          OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
+          OSS_ENDPOINT: ${{ secrets.OSS_ENDPOINT }}
+          OSS_REGION: ${{ secrets.OSS_REGION }}
+          OSS_BUCKET: ${{ secrets.OSS_BUCKET }}
+        run: |
+          $region = $env:OSS_REGION
+          if (-not $region) { $region = "cn-shenzhen" }
+          $ossutil = Get-Content ossutil_path.txt | Select-Object -First 1
+          $bundleDir = "src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis"
+          $exe = Get-ChildItem -Path $bundleDir -Filter *.exe | Select-Object -First 1
+          $sig = Get-ChildItem -Path $bundleDir -Filter *.sig | Select-Object -First 1
+          $fixedExeName = "DT-Tools-x64-setup.exe"
+          $fixedSigName = "DT-Tools-x64-setup.exe.sig"
+          $fixedExeUrl = "https://$($env:OSS_BUCKET).oss-$region.aliyuncs.com/d-space/dt-tools-desktop/windows/$fixedExeName"
+          $pkg = Get-Content package.json -Raw | ConvertFrom-Json
+          $latestObj = @{ version = $pkg.version; notes = ""; pub_date = (Get-Date).ToUniversalTime().ToString("o"); url = $fixedExeUrl; signature = (Get-Content $sig.FullName -Raw).Trim() }
+          $generatedLatest = Join-Path $env:RUNNER_TEMP "latest.json"
+          $latestObj | ConvertTo-Json -Depth 5 | Out-File -FilePath $generatedLatest -Encoding utf8
+          $dests = @("oss://$($env:OSS_BUCKET)/d-space/dt-tools-desktop/windows","oss://$($env:OSS_BUCKET)/d-space/dt-tools-desktop/windows-x86_64","oss://$($env:OSS_BUCKET)/d-space/dt-tools-desktop/windows-x86_64-msvc")
+          foreach ($dest in $dests) {
+            & $ossutil --region $region cp $exe.FullName "$dest/$fixedExeName" -e $env:OSS_ENDPOINT -i $env:OSS_ACCESS_KEY_ID -k $env:OSS_ACCESS_KEY_SECRET -u
+            & $ossutil --region $region cp $sig.FullName "$dest/$fixedSigName" -e $env:OSS_ENDPOINT -i $env:OSS_ACCESS_KEY_ID -k $env:OSS_ACCESS_KEY_SECRET -u
+            & $ossutil --region $region cp $generatedLatest "$dest/latest.json" -e $env:OSS_ENDPOINT -i $env:OSS_ACCESS_KEY_ID -k $env:OSS_ACCESS_KEY_SECRET -u
+          }

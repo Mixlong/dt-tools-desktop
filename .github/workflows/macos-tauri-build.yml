@@ -1,0 +1,77 @@
+name: macOS Tauri Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_to_oss:
+        description: "Publish to OSS after build"
+        required: true
+        default: false
+        type: boolean
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+      - run: pnpm install --no-frozen-lockfile
+      - shell: bash
+        run: |
+          node -e "const fs=require('fs');const p='src-tauri/tauri.conf.json';const j=JSON.parse(fs.readFileSync(p,'utf8'));j.bundle=j.bundle||{};j.bundle.targets=['app','dmg'];fs.writeFileSync(p,JSON.stringify(j,null,2)+'\n');"
+      - env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: pnpm tauri build --bundles app,dmg
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: macos-app-dmg
+          path: |
+            src-tauri/target/release/bundle/**/*.dmg
+            src-tauri/target/release/bundle/**/*.tar.gz
+            src-tauri/target/release/bundle/**/*.sig
+            src-tauri/target/release/bundle/**/latest.json
+          if-no-files-found: ignore
+      - if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_to_oss == true }}
+        shell: bash
+        env:
+          OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
+          OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
+          OSS_ENDPOINT: ${{ secrets.OSS_ENDPOINT }}
+          OSS_REGION: ${{ secrets.OSS_REGION }}
+          OSS_BUCKET: ${{ secrets.OSS_BUCKET }}
+        run: |
+          set -euo pipefail
+          REGION="${OSS_REGION:-cn-shenzhen}"
+          BUNDLE_DIR="src-tauri/target/release/bundle"
+          DMG_FILE=$(find "$BUNDLE_DIR" -type f -name '*.dmg' | head -n 1)
+          TAR_FILE=$(find "$BUNDLE_DIR" -type f -name '*.tar.gz' | head -n 1)
+          SIG_FILE=$(find "$BUNDLE_DIR" -type f -name '*.sig' | head -n 1)
+          FIXED_DMG_NAME="DT-Tools.dmg"
+          FIXED_TAR_NAME="DT-Tools.tar.gz"
+          FIXED_SIG_NAME="DT-Tools.tar.gz.sig"
+          FIXED_TAR_URL="https://${OSS_BUCKET}.oss-${REGION}.aliyuncs.com/d-space/dt-tools-desktop/darwin/${FIXED_TAR_NAME}"
+          APP_VERSION=$(node -e "const fs=require('fs');const c=JSON.parse(fs.readFileSync('package.json','utf8'));process.stdout.write(c.version)")
+          GENERATED_LATEST="${RUNNER_TEMP}/latest.json"
+          node -e "const fs=require('fs');const out=process.argv[1];const version=process.argv[2];const tarUrl=process.argv[3];const sigFile=process.argv[4];const sig=fs.readFileSync(sigFile,'utf8').trim();fs.writeFileSync(out,JSON.stringify({version,notes:'',pub_date:new Date().toISOString(),url:tarUrl,signature:sig},null,2)+'\n');" "$GENERATED_LATEST" "$APP_VERSION" "$FIXED_TAR_URL" "$SIG_FILE"
+          curl -fsSL -o ossutil.zip https://gosspublic.alicdn.com/ossutil/v2/2.2.1/ossutil-2.2.1-mac-amd64.zip
+          unzip -o ossutil.zip -d .
+          OSSUTIL="$(find . -type f -path '*/ossutil' | head -n 1)"
+          chmod +x "$OSSUTIL"
+          for DEST in "oss://${OSS_BUCKET}/d-space/dt-tools-desktop/darwin" "oss://${OSS_BUCKET}/d-space/dt-tools-desktop/darwin-aarch64" "oss://${OSS_BUCKET}/d-space/dt-tools-desktop/darwin-x86_64"; do
+            "$OSSUTIL" --region "$REGION" cp "$DMG_FILE" "$DEST/$FIXED_DMG_NAME" -e "$OSS_ENDPOINT" -i "$OSS_ACCESS_KEY_ID" -k "$OSS_ACCESS_KEY_SECRET" -u
+            "$OSSUTIL" --region "$REGION" cp "$TAR_FILE" "$DEST/$FIXED_TAR_NAME" -e "$OSS_ENDPOINT" -i "$OSS_ACCESS_KEY_ID" -k "$OSS_ACCESS_KEY_SECRET" -u
+            "$OSSUTIL" --region "$REGION" cp "$SIG_FILE" "$DEST/$FIXED_SIG_NAME" -e "$OSS_ENDPOINT" -i "$OSS_ACCESS_KEY_ID" -k "$OSS_ACCESS_KEY_SECRET" -u
+            "$OSSUTIL" --region "$REGION" cp "$GENERATED_LATEST" "$DEST/latest.json" -e "$OSS_ENDPOINT" -i "$OSS_ACCESS_KEY_ID" -k "$OSS_ACCESS_KEY_SECRET" -u
+          done
