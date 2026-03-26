@@ -472,37 +472,50 @@ pub fn set_meter_config_transport(
     manager: &SerialManager,
     request: MeterTransportRequest,
 ) -> Result<SimpleResult, String> {
-    let payload = [request.comm_type, request.baud_code, request.frame_type];
+    let mut attempts = vec![request.comm_type];
+    if request.comm_type == 0x01 {
+        attempts.push(0x02);
+    } else if request.comm_type == 0x02 {
+        attempts.push(0x01);
+    }
+
     let mut last_error = "串口已连接，但配置链路初始化未收到 0x37 响应".to_string();
     let mut response = None;
 
-    for _ in 0..3 {
-        match manager.send_command(0x37, &payload, DEFAULT_TIMEOUT_MS + 1000) {
-            Ok(exchange) => {
-                response = Some(exchange);
-                break;
+    for comm_type in attempts {
+        let payload = [comm_type, request.baud_code, request.frame_type];
+        for _ in 0..3 {
+            match manager.send_command(0x37, &payload, DEFAULT_TIMEOUT_MS + 1000) {
+                Ok(exchange) => {
+                    response = Some((comm_type, exchange));
+                    break;
+                }
+                Err(error) => {
+                    last_error = format!(
+                        "串口已连接，但配置链路初始化失败: commType=0x{:02X}, baudCode=0x{:02X}, frameType=0x{:02X}; {}",
+                        comm_type, request.baud_code, request.frame_type, error
+                    );
+                    std::thread::sleep(Duration::from_millis(120));
+                }
             }
-            Err(error) => {
-                last_error = format!(
-                    "串口已连接，但配置链路初始化失败: commType=0x{:02X}, baudCode=0x{:02X}, frameType=0x{:02X}; {}",
-                    request.comm_type, request.baud_code, request.frame_type, error
-                );
-                std::thread::sleep(Duration::from_millis(120));
-            }
+        }
+
+        if response.is_some() {
+            break;
         }
     }
 
-    let response = response.ok_or(last_error)?;
+    let (actual_comm_type, response) = response.ok_or(last_error)?;
     let payload = hex_to_bytes(&response.response_payload_hex)?;
     let success = payload.first().copied().unwrap_or_default() == 1;
     Ok(SimpleResult {
         success,
         message: if success {
-            "仪表配置通讯初始化成功"
+            format!("仪表配置通讯初始化成功 (commType=0x{actual_comm_type:02X})")
         } else {
-            "仪表配置通讯初始化失败"
+            format!("仪表配置通讯初始化失败 (commType=0x{actual_comm_type:02X})")
         }
-        .to_string(),
+        ,
     })
 }
 
