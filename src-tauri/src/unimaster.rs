@@ -1,4 +1,5 @@
 use std::{
+    io::ErrorKind,
     path::Path,
     sync::Mutex,
     time::{Duration, Instant},
@@ -251,10 +252,28 @@ impl SerialManager {
     }
 
     pub fn connect(&self, port_name: String, baud_rate: u32) -> Result<ConnectionStatus, String> {
-        let port = serialport::new(&port_name, baud_rate)
+        let mut port = serialport::new(&port_name, baud_rate)
             .timeout(Duration::from_millis(100))
             .open()
-            .map_err(|error| format!("打开串口失败: {error}"))?;
+            .map_err(|error| {
+                let message = error.to_string();
+                if message.contains("No such file or directory") {
+                    return "打开串口失败: 当前端口不存在，设备可能已拔出或端口名称已变化，请刷新端口后重试"
+                        .to_string();
+                }
+                if message.contains("Device or resource busy")
+                    || message.contains("Access denied")
+                    || message.contains("Permission denied")
+                {
+                    return "打开串口失败: 当前端口被其他程序占用，请关闭占用程序后重试"
+                        .to_string();
+                }
+
+                format!("打开串口失败: {message}")
+            })?;
+
+        port.write_data_terminal_ready(true).ok();
+        port.write_request_to_send(true).ok();
 
         let mut guard = self
             .connection
@@ -308,6 +327,9 @@ impl SerialManager {
     ) -> Result<FrameExchange, String> {
         self.with_port(|port| {
             let request = build_frame(command, payload)?;
+            if should_trace_serial(command) {
+                eprintln!("[serial][55][tx][cmd=0x{command:02X}] {}", bytes_to_hex(&request));
+            }
             port.clear(ClearBuffer::All).ok();
             port.write_all(&request)
                 .map_err(|error| format!("发送失败: {error}"))?;
@@ -472,59 +494,76 @@ pub fn set_meter_config_transport(
     manager: &SerialManager,
     request: MeterTransportRequest,
 ) -> Result<SimpleResult, String> {
-    let mut attempts = vec![request.comm_type];
-    if request.comm_type == 0x01 {
-        attempts.push(0x02);
-    } else if request.comm_type == 0x02 {
-        attempts.push(0x01);
-    }
-
+    let payload = [request.comm_type, request.baud_code, request.frame_type];
     let mut last_error = "串口已连接，但配置链路初始化未收到 0x37 响应".to_string();
     let mut response = None;
 
-    for comm_type in attempts {
-        let payload = [comm_type, request.baud_code, request.frame_type];
-        for _ in 0..3 {
-            match manager.send_command(0x37, &payload, DEFAULT_TIMEOUT_MS + 1000) {
-                Ok(exchange) => {
-                    response = Some((comm_type, exchange));
-                    break;
-                }
-                Err(error) => {
-                    last_error = format!(
-                        "串口已连接，但配置链路初始化失败: commType=0x{:02X}, baudCode=0x{:02X}, frameType=0x{:02X}; {}",
-                        comm_type, request.baud_code, request.frame_type, error
-                    );
-                    std::thread::sleep(Duration::from_millis(120));
-                }
+    for _ in 0..3 {
+        match manager.send_command(0x37, &payload, DEFAULT_TIMEOUT_MS + 1000) {
+            Ok(exchange) => {
+                response = Some(exchange);
+                break;
             }
-        }
-
-        if response.is_some() {
-            break;
+            Err(error) => {
+                last_error = format!(
+                    "串口已连接，但配置链路初始化失败: commType=0x{:02X}, baudCode=0x{:02X}, frameType=0x{:02X}; {}",
+                    request.comm_type, request.baud_code, request.frame_type, error
+                );
+                std::thread::sleep(Duration::from_millis(120));
+            }
         }
     }
 
-    let (actual_comm_type, response) = response.ok_or(last_error)?;
+    let Some(response) = response else {
+        if detect_active_3a_traffic(manager, 800)? {
+            if request.comm_type == 0x01 {
+                prime_meter_config_uart(manager).ok();
+            }
+
+            return Ok(SimpleResult {
+                success: true,
+                message: "检测到设备已处于 3A 通讯状态，跳过 0x37 初始化".to_string(),
+            });
+        }
+
+        return Err(last_error);
+    };
+
     let payload = hex_to_bytes(&response.response_payload_hex)?;
     let success = payload.first().copied().unwrap_or_default() == 1;
+
+    if success && request.comm_type == 0x01 {
+        prime_meter_config_uart(manager).ok();
+    }
+
     Ok(SimpleResult {
         success,
         message: if success {
-            format!("仪表配置通讯初始化成功 (commType=0x{actual_comm_type:02X})")
+            "仪表配置通讯初始化成功".to_string()
         } else {
-            format!("仪表配置通讯初始化失败 (commType=0x{actual_comm_type:02X})")
-        }
-        ,
+            "仪表配置通讯初始化失败".to_string()
+        },
     })
 }
 
 pub fn read_meter_config(manager: &SerialManager) -> Result<MeterConfigReadResponse, String> {
-    let frame = send_3a_command(manager, 0xC2, &[], 0xC3, DEFAULT_TIMEOUT_MS)?;
-    Ok(MeterConfigReadResponse {
-        hex: bytes_to_hex(&frame.payload),
-        bytes: frame.payload,
-    })
+    let mut last_error = "读取配置失败".to_string();
+    for _ in 0..20 {
+        match send_3a_command(manager, 0xC2, &[], 0xC3, 600) {
+            Ok(frame) => {
+                return Ok(MeterConfigReadResponse {
+                    hex: bytes_to_hex(&frame.payload),
+                    bytes: frame.payload,
+                });
+            }
+            Err(error) => {
+                last_error = error;
+                std::thread::sleep(Duration::from_millis(120));
+            }
+        }
+    }
+
+    Err(format!("读取配置失败: {last_error}"))
 }
 
 pub fn write_meter_config(manager: &SerialManager, bytes: Vec<u8>) -> Result<SimpleResult, String> {
@@ -961,12 +1000,55 @@ fn send_3a_command(
 ) -> Result<ThreeAFrame, String> {
     manager.with_port(|port| {
         let request = build_3a_frame(command, payload)?;
+        if should_trace_serial(command) {
+            eprintln!("[serial][3A][tx][cmd=0x{command:02X}] {}", bytes_to_hex(&request));
+        }
         port.clear(ClearBuffer::All).ok();
         port.write_all(&request)
             .map_err(|error| format!("发送 3A 指令失败: {error}"))?;
         port.flush()
             .map_err(|error| format!("刷新串口失败: {error}"))?;
         read_expected_3a_frame(port, expected_response, timeout_ms)
+    })
+}
+
+fn prime_meter_config_uart(manager: &SerialManager) -> Result<(), String> {
+    let mut last_error = "UART 心跳初始化失败".to_string();
+    for _ in 0..5 {
+        match send_3a_command(manager, 0xAB, &[0x01, 0x01, 0x00], 0xAB, 300) {
+            Ok(_) => return Ok(()),
+            Err(error) => {
+                last_error = error;
+                std::thread::sleep(Duration::from_millis(120));
+            }
+        }
+    }
+
+    Err(last_error)
+}
+
+fn detect_active_3a_traffic(manager: &SerialManager, timeout_ms: u64) -> Result<bool, String> {
+    manager.with_port(|port| {
+        let deadline = Instant::now() + Duration::from_millis(timeout_ms.max(100));
+        let mut buffer = Vec::new();
+
+        while Instant::now() < deadline {
+            let appended = append_serial_bytes(port, &mut buffer)?;
+            if appended > 0 {
+                eprintln!("[serial][3A][probe] {}", bytes_to_hex(&buffer));
+            }
+
+            while let Some(frame) = extract_3a_frame(&mut buffer)? {
+                eprintln!(
+                    "[serial][3A][detected-active][cmd=0x{:02X}] {}",
+                    frame.command,
+                    bytes_to_hex(&frame.payload)
+                );
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
     })
 }
 
@@ -1011,13 +1093,33 @@ fn read_expected_frame(
     timeout_ms: u64,
 ) -> Result<Frame, String> {
     let deadline = Instant::now() + Duration::from_millis(timeout_ms.max(100));
+    let mut buffer = Vec::new();
     while Instant::now() < deadline {
-        match read_frame(port) {
-            Ok(frame) if frame.command == expected_command => return Ok(frame),
-            Ok(_) => continue,
-            Err(error) if error.contains("timed out") => continue,
-            Err(error) => return Err(error),
+        let appended = append_serial_bytes(port, &mut buffer)?;
+        if appended > 0 && should_trace_serial(expected_command) {
+            eprintln!(
+                "[serial][55][rx-chunk][expect=0x{expected_command:02X}] {}",
+                bytes_to_hex(&buffer)
+            );
         }
+        while let Some(frame) = extract_frame(&mut buffer)? {
+            if should_trace_serial(expected_command) {
+                eprintln!(
+                    "[serial][55][rx-frame][cmd=0x{:02X}] {}",
+                    frame.command,
+                    bytes_to_hex(&frame.raw)
+                );
+            }
+            if frame.command == expected_command {
+                return Ok(frame);
+            }
+        }
+    }
+    if should_trace_serial(expected_command) && !buffer.is_empty() {
+        eprintln!(
+            "[serial][55][timeout][expect=0x{expected_command:02X}] buffered={}",
+            bytes_to_hex(&buffer)
+        );
     }
     Err(format!("等待命令 0x{expected_command:02X} 响应超时"))
 }
@@ -1028,110 +1130,143 @@ fn read_expected_3a_frame(
     timeout_ms: u64,
 ) -> Result<ThreeAFrame, String> {
     let deadline = Instant::now() + Duration::from_millis(timeout_ms.max(100));
+    let mut buffer = Vec::new();
     while Instant::now() < deadline {
-        match read_3a_frame(port) {
-            Ok(frame) if frame.command == expected_command => return Ok(frame),
-            Ok(_) => continue,
-            Err(error) if error.contains("timed out") => continue,
-            Err(error) => return Err(error),
+        let appended = append_serial_bytes(port, &mut buffer)?;
+        if appended > 0 && should_trace_serial(expected_command) {
+            eprintln!(
+                "[serial][3A][rx-chunk][expect=0x{expected_command:02X}] {}",
+                bytes_to_hex(&buffer)
+            );
+        }
+        while let Some(frame) = extract_3a_frame(&mut buffer)? {
+            if should_trace_serial(expected_command) {
+                eprintln!(
+                    "[serial][3A][rx-frame][cmd=0x{:02X}] {}",
+                    frame.command,
+                    bytes_to_hex(&frame.payload)
+                );
+            }
+            if frame.command == expected_command {
+                return Ok(frame);
+            }
         }
     }
 
+    if should_trace_serial(expected_command) && !buffer.is_empty() {
+        eprintln!(
+            "[serial][3A][timeout][expect=0x{expected_command:02X}] buffered={}",
+            bytes_to_hex(&buffer)
+        );
+    }
     Err(format!("等待 3A 命令 0x{expected_command:02X} 响应超时"))
 }
 
-fn read_frame(port: &mut dyn SerialPort) -> Result<Frame, String> {
-    let mut start = [0u8; 1];
-    loop {
-        port.read_exact(&mut start)
-            .map_err(|error| format!("读取帧头失败: {error}"))?;
-        if start[0] == FRAME_START {
-            break;
+fn append_serial_bytes(port: &mut dyn SerialPort, buffer: &mut Vec<u8>) -> Result<usize, String> {
+    let mut chunk = [0u8; 256];
+    match port.read(&mut chunk) {
+        Ok(0) => Ok(0),
+        Ok(read) => {
+            buffer.extend_from_slice(&chunk[..read]);
+            Ok(read)
         }
+        Err(error) if error.kind() == ErrorKind::TimedOut => Ok(0),
+        Err(error) => Err(format!("读取串口数据失败: {error}")),
     }
-
-    let mut header = [0u8; 2];
-    port.read_exact(&mut header)
-        .map_err(|error| format!("读取帧头失败: {error}"))?;
-    let command = header[0];
-    let length = header[1] as usize;
-    let mut payload = vec![0u8; length];
-    if length > 0 {
-        port.read_exact(&mut payload)
-            .map_err(|error| format!("读取负载失败: {error}"))?;
-    }
-    let mut checksum = [0u8; 1];
-    port.read_exact(&mut checksum)
-        .map_err(|error| format!("读取校验失败: {error}"))?;
-
-    let mut raw = vec![FRAME_START, command, length as u8];
-    raw.extend_from_slice(&payload);
-    let expected = raw.iter().fold(0u8, |acc, value| acc ^ value);
-    if checksum[0] != expected {
-        return Err(format!(
-            "校验失败，期望 0x{expected:02X}，收到 0x{:02X}",
-            checksum[0]
-        ));
-    }
-    raw.push(checksum[0]);
-    Ok(Frame {
-        command,
-        payload,
-        raw,
-    })
 }
 
-fn read_3a_frame(port: &mut dyn SerialPort) -> Result<ThreeAFrame, String> {
-    let mut start = [0u8; 1];
+fn should_trace_serial(command: u8) -> bool {
+    matches!(command, 0x37 | 0xAB | 0xC0 | 0xC1 | 0xC2 | 0xC3)
+}
+
+fn extract_frame(buffer: &mut Vec<u8>) -> Result<Option<Frame>, String> {
     loop {
-        port.read_exact(&mut start)
-            .map_err(|error| format!("读取 3A 帧头失败: {error}"))?;
-        if start[0] == THREE_A_FRAME_START {
-            break;
+        let Some(start_index) = buffer.iter().position(|value| *value == FRAME_START) else {
+            buffer.clear();
+            return Ok(None);
+        };
+
+        if start_index > 0 {
+            buffer.drain(..start_index);
         }
+
+        if buffer.len() < 4 {
+            return Ok(None);
+        }
+
+        let length = buffer[2] as usize;
+        let total = length + 4;
+        if buffer.len() < total {
+            return Ok(None);
+        }
+
+        let raw = buffer[..total].to_vec();
+        let expected = raw[..total - 1]
+            .iter()
+            .fold(0u8, |acc, value| acc ^ value);
+        if raw[total - 1] != expected {
+            buffer.drain(..1);
+            continue;
+        }
+
+        let frame = Frame {
+            command: raw[1],
+            payload: raw[3..total - 1].to_vec(),
+            raw,
+        };
+        buffer.drain(..total);
+        return Ok(Some(frame));
     }
+}
 
-    let mut header = [0u8; 3];
-    port.read_exact(&mut header)
-        .map_err(|error| format!("读取 3A 帧头失败: {error}"))?;
+fn extract_3a_frame(buffer: &mut Vec<u8>) -> Result<Option<ThreeAFrame>, String> {
+    loop {
+        let Some(start_index) = buffer.iter().position(|value| *value == THREE_A_FRAME_START) else {
+            buffer.clear();
+            return Ok(None);
+        };
 
-    let device_address = header[0];
-    if device_address != THREE_A_DEVICE_ADDRESS {
-        return Err(format!("3A 设备地址错误: 0x{device_address:02X}"));
+        if start_index > 0 {
+            buffer.drain(..start_index);
+        }
+
+        if buffer.len() < 8 {
+            return Ok(None);
+        }
+
+        let length = buffer[3] as usize;
+        let total = length + 8;
+        if buffer.len() < total {
+            return Ok(None);
+        }
+
+        let raw = buffer[..total].to_vec();
+        if raw[1] != THREE_A_DEVICE_ADDRESS {
+            buffer.drain(..1);
+            continue;
+        }
+
+        if raw[total - 2] != THREE_A_END_1 || raw[total - 1] != THREE_A_END_2 {
+            buffer.drain(..1);
+            continue;
+        }
+
+        let checksum = u16::from_le_bytes([raw[total - 4], raw[total - 3]]);
+        let expected = raw[1..total - 4]
+            .iter()
+            .fold(0u16, |acc, value| acc.wrapping_add(*value as u16));
+        if checksum != expected {
+            buffer.drain(..1);
+            continue;
+        }
+
+        let frame = ThreeAFrame {
+            command: raw[2],
+            payload: raw[4..total - 4].to_vec(),
+        };
+        buffer.drain(..total);
+        return Ok(Some(frame));
     }
-
-    let command = header[1];
-    let length = header[2] as usize;
-    let mut payload = vec![0u8; length];
-    if length > 0 {
-        port.read_exact(&mut payload)
-            .map_err(|error| format!("读取 3A 负载失败: {error}"))?;
-    }
-
-    let mut trailer = [0u8; 4];
-    port.read_exact(&mut trailer)
-        .map_err(|error| format!("读取 3A 校验失败: {error}"))?;
-
-    let checksum = u16::from_le_bytes([trailer[0], trailer[1]]);
-    if trailer[2] != THREE_A_END_1 || trailer[3] != THREE_A_END_2 {
-        return Err("3A 帧结束符错误".to_string());
-    }
-
-    let mut raw = vec![THREE_A_FRAME_START, device_address, command, length as u8];
-    raw.extend_from_slice(&payload);
-    let expected = raw[1..]
-        .iter()
-        .fold(0u16, |acc, value| acc.wrapping_add(*value as u16));
-    if checksum != expected {
-        return Err(format!(
-            "3A 校验失败，期望 0x{expected:04X}，收到 0x{checksum:04X}"
-        ));
-    }
-
-    Ok(ThreeAFrame {
-        command,
-        payload,
-    })
 }
 
 fn bytes_to_hex(bytes: &[u8]) -> String {

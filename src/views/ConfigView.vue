@@ -1,12 +1,37 @@
 <template>
   <div class="config-page">
-    <section class="page-intro">
-      <div>
-        <span class="section-eyebrow">Instrument Parameters</span>
-        <h2>仪表参数调整</h2>
-        <p>迁移旧项目的仪表参数读取、写入、导入和导出能力，并保留桌面工具的工作台布局。</p>
+    <section class="page-card toolbar-panel">
+      <div class="toolbar-panel__group">
+        <span class="toolbar-panel__label">串口</span>
+        <div class="transport-toolbar">
+          <el-segmented v-model="transportForm.commType" :options="transportTypeOptions" />
+          <el-select v-model="transportForm.baudCode" class="transport-toolbar__select">
+            <el-option
+              v-for="option in transportBaudOptions"
+              :key="option.value"
+              :label="option.label"
+              :value="option.value"
+            />
+          </el-select>
+          <el-select v-if="transportForm.commType === 0x02" v-model="transportForm.frameType" class="transport-toolbar__select">
+            <el-option
+              v-for="option in METER_CAN_FRAME_OPTIONS"
+              :key="option.value"
+              :label="option.label"
+              :value="option.value"
+            />
+          </el-select>
+          <el-button type="primary" :loading="loading.init" @click="initTransport">初始化配置链路</el-button>
+        </div>
+        <div class="actions">
+          <el-button :loading="loading.read" @click="handleReadConfig">读取配置</el-button>
+          <el-button :loading="loading.write" @click="handleWriteConfig">写入配置</el-button>
+          <el-button @click="openImportDialog">导入配置</el-button>
+          <el-button @click="handleExportConfig">导出配置</el-button>
+        </div>
       </div>
-      <div class="page-intro__meta">
+
+      <div class="toolbar-panel__group toolbar-panel__group--transport">
         <span class="metric-chip">
           <span :class="['metric-chip__dot', { 'metric-chip__dot--idle': !linkReady }]" />
           {{ linkReady ? "配置链路已初始化" : "未初始化配置链路" }}
@@ -24,12 +49,6 @@
           <div>
             <h3>参数编辑区</h3>
             <p>字段按旧项目能力拆成多个功能块，写入时统一编码为 54 字节仪表配置。</p>
-          </div>
-          <div class="actions">
-            <el-button :loading="loading.read" @click="handleReadConfig">读取配置</el-button>
-            <el-button type="primary" :loading="loading.write" @click="handleWriteConfig">写入配置</el-button>
-            <el-button @click="openImportDialog">导入配置</el-button>
-            <el-button @click="handleExportConfig">导出配置</el-button>
           </div>
         </div>
 
@@ -55,18 +74,21 @@
                 <label class="field-label">{{ field.label }}</label>
 
                 <template v-if="field.type === 'select'">
-                  <el-select v-model="form[field.key]" @change="handleFieldChange(field.key)">
-                    <el-option
-                      v-for="option in field.options"
-                      :key="`${field.key}-${option.value}`"
-                      :label="option.label"
-                      :value="option.value"
-                    />
-                  </el-select>
+                  <div :class="['field-control', { 'field-control--with-unit': field.unit }]">
+                    <el-select v-model="form[field.key]" @change="handleFieldChange(field.key)">
+                      <el-option
+                        v-for="option in field.options"
+                        :key="`${field.key}-${option.value}`"
+                        :label="option.label"
+                        :value="option.value"
+                      />
+                    </el-select>
+                    <span v-if="field.unit" class="field-control__append">{{ field.unit }}</span>
+                  </div>
                 </template>
 
                 <template v-else-if="field.type === 'number'">
-                  <div class="field-inline">
+                  <div :class="['field-control', { 'field-control--with-unit': field.unit }]">
                     <el-input-number
                       v-model="form[field.key]"
                       :controls="false"
@@ -75,7 +97,7 @@
                       :precision="field.precision"
                       :step="field.step ?? 1"
                     />
-                    <span v-if="field.unit" class="field-unit">{{ field.unit }}</span>
+                    <span v-if="field.unit" class="field-control__append">{{ field.unit }}</span>
                   </div>
                 </template>
 
@@ -93,50 +115,6 @@
       </section>
 
       <aside class="side-stack">
-        <section class="panel">
-          <div class="panel-header">
-            <div>
-              <h3>通讯初始化</h3>
-              <p>先发送旧项目参数页对应的 `0x37` 配置命令，再进行 3A 协议读写。</p>
-            </div>
-          </div>
-
-          <div class="panel-body">
-            <el-form label-position="top" class="transport-form">
-              <el-form-item label="通讯类型">
-                <el-segmented v-model="transportForm.commType" :options="transportTypeOptions" />
-              </el-form-item>
-              <div class="transport-tip">
-                左侧“适配器连接”的波特率是 PC 到适配器的串口速率；这里的 UART 波特率是适配器发给仪表的目标速率。
-              </div>
-              <el-form-item :label="transportForm.commType === 0x02 ? 'CAN 波特率' : 'UART 波特率'">
-                <el-select v-model="transportForm.baudCode">
-                  <el-option
-                    v-for="option in transportBaudOptions"
-                    :key="option.value"
-                    :label="option.label"
-                    :value="option.value"
-                  />
-                </el-select>
-              </el-form-item>
-              <el-form-item v-if="transportForm.commType === 0x02" label="帧类型">
-                <el-select v-model="transportForm.frameType">
-                  <el-option
-                    v-for="option in METER_CAN_FRAME_OPTIONS"
-                    :key="option.value"
-                    :label="option.label"
-                    :value="option.value"
-                  />
-                </el-select>
-              </el-form-item>
-            </el-form>
-
-            <div class="actions actions--stack">
-              <el-button type="primary" :loading="loading.init" @click="initTransport">初始化配置链路</el-button>
-            </div>
-          </div>
-        </section>
-
         <section class="panel">
           <div class="panel-header">
             <div>
@@ -185,8 +163,9 @@
 </template>
 
 <script setup>
+import { save } from "@tauri-apps/plugin-dialog"
 import { ElMessage } from "element-plus"
-import { readMeterConfig, setMeterConfigTransport, writeMeterConfig } from "@/api/unimaster"
+import { readMeterConfig, saveTextFile, setMeterConfigTransport, writeMeterConfig } from "@/api/unimaster"
 import { useDeviceStore } from "@/store/device"
 import {
   METER_CAN_BAUD_OPTIONS,
@@ -238,9 +217,21 @@ const transportBaudOptions = computed(() =>
 
 const wheelSummary = computed(() => `${getWheelDiameterLabel(form.wheelDiameter)} / ${form.perimeter} mm`)
 
+function getTransportErrorMessage(error) {
+  const message = String(error)
+  if (!message.includes("等待命令 0x37 响应超时")) {
+    return message
+  }
+
+  const transportLabel = transportForm.commType === 0x02 ? "CAN" : "UART"
+  const baudLabel = transportBaudOptions.value.find((item) => item.value === transportForm.baudCode)?.label ?? transportForm.baudCode
+  return `配置链路初始化超时。请确认适配器连接使用固定 115200，当前页面选择的是 ${transportLabel} / ${baudLabel}，并检查仪表是否上电、TX/RX/GND 接线是否正确。`
+}
+
 watch(
   () => transportForm.commType,
   (value) => {
+    linkReady.value = false
     if (value === 0x02) {
       transportForm.baudCode = METER_CAN_BAUD_OPTIONS[0]?.value ?? 0x08
       transportForm.frameType = 0x01
@@ -252,7 +243,52 @@ watch(
   },
 )
 
-async function initTransport() {
+watch(
+  () => transportForm.baudCode,
+  () => {
+    linkReady.value = false
+  },
+)
+
+watch(
+  () => transportForm.frameType,
+  () => {
+    linkReady.value = false
+  },
+)
+
+watch(
+  () => deviceStore.connectionStatus,
+  (status) => {
+    if (status !== "CONNECTED") {
+      linkReady.value = false
+      if (lastAction.value.startsWith("串口连接后自动初始化")) {
+        lastAction.value = "未执行"
+      }
+      return
+    }
+
+    if (!linkReady.value) {
+      lastAction.value = "适配器已连接，等待初始化配置链路"
+    }
+  },
+  { immediate: true },
+)
+
+async function initTransport(options = {}) {
+  const { silent = false, trigger = "手动初始化" } = options
+
+  if (deviceStore.connectionStatus !== "CONNECTED") {
+    if (!silent) {
+      ElMessage.warning("请先连接串口适配器")
+    }
+    return false
+  }
+
+  if (loading.init) {
+    return linkReady.value
+  }
+
   loading.init = true
   try {
     const result = await setMeterConfigTransport({
@@ -262,17 +298,36 @@ async function initTransport() {
     })
 
     linkReady.value = result.success
-    lastAction.value = result.message
-    ElMessage[result.success ? "success" : "warning"](result.message)
+    lastAction.value = `${trigger}: ${result.message}`
+    if (!silent || !result.success) {
+      ElMessage[result.success ? "success" : "warning"](result.message)
+    }
+    return result.success
   } catch (error) {
     linkReady.value = false
-    ElMessage.error(String(error))
+    lastAction.value = `${trigger}: 初始化失败`
+    if (!silent) {
+      ElMessage.error(getTransportErrorMessage(error))
+    }
+    return false
   } finally {
     loading.init = false
   }
 }
 
+async function ensureTransportReady(trigger) {
+  if (linkReady.value) {
+    return true
+  }
+
+  return initTransport({ silent: false, trigger })
+}
+
 async function handleReadConfig() {
+  if (!(await ensureTransportReady("读取前自动初始化"))) {
+    return
+  }
+
   loading.read = true
   try {
     const result = await readMeterConfig()
@@ -289,6 +344,10 @@ async function handleReadConfig() {
 async function handleWriteConfig() {
   if (!validateMeterConfig(form)) {
     ElMessage.warning("仪表配置参数均为必填项")
+    return
+  }
+
+  if (!(await ensureTransportReady("写入前自动初始化"))) {
     return
   }
 
@@ -327,21 +386,29 @@ async function handleImportFile(event) {
   }
 }
 
-function handleExportConfig() {
+async function handleExportConfig() {
   if (!validateMeterConfig(form)) {
     ElMessage.warning("仪表配置参数均为必填项")
     return
   }
 
-  const json = JSON.stringify(form, null, 2)
-  const blob = new Blob([json], { type: "application/json" })
-  const url = URL.createObjectURL(blob)
-  const link = document.createElement("a")
-  link.href = url
-  link.setAttribute("download", `配置文件-${Date.now()}.json`)
-  link.click()
-  URL.revokeObjectURL(url)
-  lastAction.value = "配置已导出"
+  try {
+    const path = await save({
+      title: "导出配置",
+      defaultPath: `配置文件-${Date.now()}.json`,
+      filters: [{ name: "JSON", extensions: ["json"] }],
+    })
+
+    if (!path || Array.isArray(path)) {
+      return
+    }
+
+    await saveTextFile(path, JSON.stringify(form, null, 2))
+    lastAction.value = `配置已导出到 ${path.split(/[\\\\/]/).pop()}`
+    ElMessage.success("导出配置成功")
+  } catch (error) {
+    ElMessage.error(String(error))
+  }
 }
 
 function handleFieldChange(fieldKey) {
@@ -363,9 +430,48 @@ function handleFieldChange(fieldKey) {
 .config-page {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
   height: 100%;
   min-height: 0;
+}
+
+.toolbar-panel {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 14px;
+}
+
+.toolbar-panel__group {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.toolbar-panel__group--transport {
+  margin-left: auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.toolbar-panel__label {
+  color: var(--dt-text-secondary);
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.transport-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.transport-toolbar__select {
+  width: 148px;
 }
 
 .config-grid {
@@ -469,43 +575,66 @@ function handleFieldChange(fieldKey) {
   line-height: 1.35;
 }
 
-.field-inline {
+.field-control {
   display: flex;
   align-items: center;
-  gap: 8px;
-}
-
-.field-inline :deep(.el-input-number) {
   width: 100%;
 }
 
-.field-unit {
-  color: var(--dt-text-muted);
+.field-control :deep(.el-input-number),
+.field-control :deep(.el-select) {
+  width: 100%;
+}
+
+.field-control--with-unit {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch;
+  border: 1px solid var(--dt-border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.field-control--with-unit :deep(.el-input-number .el-input__wrapper),
+.field-control--with-unit :deep(.el-select__wrapper) {
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
+}
+
+.field-control__append {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  align-self: stretch;
+  min-width: 48px;
+  padding: 0 12px;
+  border-left: 1px solid var(--dt-border);
+  border-radius: 0;
+  background: #f5f8fc;
+  color: var(--dt-text-secondary);
   font-size: 12px;
+  font-weight: 600;
   white-space: nowrap;
 }
 
-.transport-form {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.transport-tip {
-  margin: -2px 0 4px;
-  color: var(--dt-text-muted);
-  font-size: 12px;
-  line-height: 1.6;
+.form-grid :deep(.el-input__inner),
+.form-grid :deep(.el-select__selected-item),
+.form-grid :deep(.el-input-number .el-input__inner),
+.form-grid :deep(.el-input-number__decrease),
+.form-grid :deep(.el-input-number__increase),
+.form-grid :deep(.el-input__wrapper),
+.form-grid :deep(.el-select__wrapper) {
+  text-align: left;
+  justify-content: flex-start;
 }
 
 .actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-}
-
-.actions--stack {
-  margin-top: 4px;
 }
 
 .summary-list {
@@ -606,6 +735,20 @@ function handleFieldChange(fieldKey) {
 }
 
 @media (max-width: 1200px) {
+  .toolbar-panel {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .toolbar-panel__group {
+    flex-wrap: wrap;
+  }
+
+  .toolbar-panel__group--transport {
+    margin-left: 0;
+    justify-content: flex-start;
+  }
+
   .config-grid {
     grid-template-columns: 1fr;
   }

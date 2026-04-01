@@ -1,4 +1,8 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::{
+    fs,
+    path::Path,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use tauri::{
     image::Image,
@@ -12,6 +16,17 @@ mod unimaster;
 #[tauri::command]
 fn restart_app(app: tauri::AppHandle) {
     app.restart();
+}
+
+#[tauri::command]
+fn save_text_file(path: String, contents: String) -> Result<(), String> {
+    if let Some(parent) = Path::new(&path).parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent).map_err(|error| format!("创建目录失败: {error}"))?;
+        }
+    }
+
+    fs::write(&path, contents).map_err(|error| format!("保存文件失败: {error}"))
 }
 
 #[tauri::command]
@@ -199,6 +214,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             restart_app,
+            save_text_file,
             list_serial_ports,
             serial_status,
             connect_serial,

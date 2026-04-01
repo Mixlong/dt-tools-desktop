@@ -72,6 +72,10 @@ export function writeMeterConfig(bytes) {
   return invoke("write_meter_config", { bytes })
 }
 
+export function saveTextFile(path, contents) {
+  return invoke("save_text_file", { path, contents })
+}
+
 export async function fileToBytes(file) {
   const buffer = await file.arrayBuffer()
   return Array.from(new Uint8Array(buffer))

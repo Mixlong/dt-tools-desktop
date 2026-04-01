@@ -478,52 +478,60 @@ export function encodeMeterConfig(config) {
 }
 
 export function decodeMeterConfig(bytes) {
-  if (!Array.isArray(bytes) || bytes.length < 52) {
+  if (!Array.isArray(bytes) || bytes.length < 49) {
     throw new Error("配置字节长度不足")
   }
 
+  let normalizedBytes = bytes
+
+  // 旧项目读取 0xC3 配置时，设备会返回去掉系统时间（年/月/日/时/分）的 49 字节包。
+  // 新项目写入仍然是 54 字节，因此这里把 49 字节老格式补齐成统一的 54 字节再解码。
+  if (bytes.length === 49) {
+    normalizedBytes = [bytes[0], bytes[1], 0, 0, 0, 0, 0, ...bytes.slice(2)]
+  }
+
   return normalizeMeterConfig({
-    backlightBrightness: Number(bytes[0]),
-    sleepTime: Number(bytes[1]),
-    voltage: Number(bytes[7]),
-    powerGear: Number(bytes[8]),
-    assist: Number(bytes[9]),
-    assistStartMagnetNumber: Number(bytes[10]),
-    assistPercentage: Number(bytes[11]),
-    rotateHandle: Number(bytes[12]),
-    rotateHandleSpeedLimit: Number(bytes[13]),
-    slowStart: Number(bytes[14]),
-    speedSteel: Number(bytes[15]),
-    undervoltage: readUInt16(bytes[16], bytes[17]) / 1000,
-    currentlimiting: Number(bytes[18]),
-    assistLimit: Number(bytes[19]),
-    wheelDiameter: Number(bytes[20]),
-    batteryVoltageChangeTime: Number(bytes[21]),
-    allLineErrTimeOut: Number(bytes[22]),
-    smoothLevel: Number(bytes[23]),
-    unit: Number(bytes[24]),
-    bluetooth: Number(bytes[25]),
-    perimeter: readUInt16(bytes[26], bytes[27]),
-    agreement: Number(bytes[28]),
-    power: Number(bytes[29]),
-    driveAssist: Number(bytes[30]),
-    defaultGear: Number(bytes[31]),
-    logo: Number(bytes[32]),
-    serialLevel: Number(bytes[33]),
-    buzzerSwitch: Number(bytes[34]),
-    highSpeedBuzzerRemind: Number(bytes[35]),
-    cruise: Number(bytes[36]),
-    startupPasswd: readUInt16(bytes[37], bytes[38]),
-    highMenuPasswd: readUInt16(bytes[39], bytes[40]),
-    factoryReset: Number(bytes[41]),
-    ebikeName: Number(bytes[42]),
-    motorSys: readUInt16(bytes[43], bytes[44]),
-    batteryCap: readUInt16(bytes[45], bytes[46]),
-    showWheelsize: readUInt16(bytes[47], bytes[48]),
-    tiresSize: Number(bytes[49]),
-    carModel: String.fromCharCode(bytes[50] || 32) + String.fromCharCode(bytes[51] || 32),
-    turnOnPasswd: Number(bytes[52] ?? 1),
-    menuPassword: Number(bytes[53] ?? 0),
+    backlightBrightness: Number(normalizedBytes[0]),
+    sleepTime: Number(normalizedBytes[1]),
+    voltage: Number(normalizedBytes[7]),
+    powerGear: Number(normalizedBytes[8]),
+    assist: Number(normalizedBytes[9]),
+    assistStartMagnetNumber: Number(normalizedBytes[10]),
+    assistPercentage: Number(normalizedBytes[11]),
+    rotateHandle: Number(normalizedBytes[12]),
+    rotateHandleSpeedLimit: Number(normalizedBytes[13]),
+    slowStart: Number(normalizedBytes[14]),
+    speedSteel: Number(normalizedBytes[15]),
+    undervoltage: readUInt16(normalizedBytes[16], normalizedBytes[17]) / 1000,
+    currentlimiting: Number(normalizedBytes[18]),
+    assistLimit: Number(normalizedBytes[19]),
+    wheelDiameter: Number(normalizedBytes[20]),
+    batteryVoltageChangeTime: Number(normalizedBytes[21]),
+    allLineErrTimeOut: Number(normalizedBytes[22]),
+    smoothLevel: Number(normalizedBytes[23]),
+    unit: Number(normalizedBytes[24]),
+    bluetooth: Number(normalizedBytes[25]),
+    perimeter: readUInt16(normalizedBytes[26], normalizedBytes[27]),
+    agreement: Number(normalizedBytes[28]),
+    power: Number(normalizedBytes[29]),
+    driveAssist: Number(normalizedBytes[30]),
+    defaultGear: Number(normalizedBytes[31]),
+    logo: Number(normalizedBytes[32]),
+    serialLevel: Number(normalizedBytes[33]),
+    buzzerSwitch: Number(normalizedBytes[34]),
+    highSpeedBuzzerRemind: Number(normalizedBytes[35]),
+    cruise: Number(normalizedBytes[36]),
+    startupPasswd: readUInt16(normalizedBytes[37], normalizedBytes[38]),
+    highMenuPasswd: readUInt16(normalizedBytes[39], normalizedBytes[40]),
+    factoryReset: Number(normalizedBytes[41]),
+    ebikeName: Number(normalizedBytes[42]),
+    motorSys: readUInt16(normalizedBytes[43], normalizedBytes[44]),
+    batteryCap: readUInt16(normalizedBytes[45], normalizedBytes[46]),
+    showWheelsize: readUInt16(normalizedBytes[47], normalizedBytes[48]),
+    tiresSize: Number(normalizedBytes[49]),
+    carModel: String.fromCharCode(normalizedBytes[50] || 32) + String.fromCharCode(normalizedBytes[51] || 32),
+    turnOnPasswd: Number(normalizedBytes[52] ?? 0),
+    menuPassword: Number(normalizedBytes[53] ?? 0),
   })
 }
 

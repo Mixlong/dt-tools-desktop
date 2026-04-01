@@ -87,10 +87,8 @@
             </el-select>
           </el-form-item>
           <el-form-item label="适配器串口波特率">
-            <el-select v-model="deviceStore.baudRate">
-              <el-option v-for="item in baudRates" :key="item" :label="item" :value="item" />
-            </el-select>
-            <div class="drawer-help">这是电脑连接 UniMaster 适配器的串口速率，通常使用 115200。</div>
+            <el-input :model-value="String(deviceStore.baudRate)" disabled />
+            <div class="drawer-help">电脑连接 UniMaster 适配器的串口速率固定为 115200，和页面里的仪表 UART 波特率不是一回事。</div>
           </el-form-item>
           <el-form-item v-if="deviceStore.transport === 'can'" label="CAN 波特率">
             <el-select v-model="deviceStore.canBitrate">
@@ -166,7 +164,6 @@ const frameTypeOptions = [
   { label: "标准帧", value: "standard" },
   { label: "扩展帧", value: "extended" },
 ]
-const baudRates = [115200, 57600, 38400, 19200, 9600]
 const canRates = [125, 250, 500, 1000]
 const deviceEndpoint = computed(() => {
   if (deviceStore.connectionStatus === "CONNECTED" && deviceStore.port) {
@@ -187,6 +184,21 @@ onMounted(async () => {
     ElMessage.error(String(error))
   }
 })
+
+watch(
+  drawer,
+  async (opened) => {
+    if (!opened) {
+      return
+    }
+
+    try {
+      await deviceStore.refreshPorts()
+    } catch (error) {
+      ElMessage.error(String(error))
+    }
+  },
+)
 
 async function refreshPorts() {
   try {
