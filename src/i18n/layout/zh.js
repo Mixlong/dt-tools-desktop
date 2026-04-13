@@ -18,7 +18,7 @@ export default {
     manualModelRequired: "请先输入型号",
     manualModelReadPending: "型号 {model} 的 CQ 配置串读取接口暂未接入",
     cqCode: "CQ 配置串",
-    cqCodePlaceholder: "例如：CQ04000110",
+    cqCodePlaceholder: "例如：CQ04000111",
     transportMode: "通信模式",
     meterBaudRate: "仪表波特率",
     canFrameType: "CAN 帧类型",

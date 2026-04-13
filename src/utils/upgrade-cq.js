@@ -84,7 +84,7 @@ export function getUpgradeFrameIdOptions(commType) {
         { label: "特殊帧ID", value: 0x02 },
       ]
     : [
-        { label: "串口默认", value: 0x00 },
+        { label: "默认帧ID", value: 0x01 },
       ]
 }
 
@@ -96,7 +96,7 @@ export function createDefaultUpgradeCqState() {
     powerVoltage: 0x00,
     vlk5vEnabled: 0x00,
     protocolType: 0x01,
-    frameId: 0x00,
+    frameId: 0x01,
     specialFrameValue: "",
   }
 }
@@ -109,8 +109,34 @@ function normalizeNibble(value, fieldName) {
   return normalized.toString(16).toUpperCase()
 }
 
+function normalizeSpecialFrameValue(value) {
+  const normalized = String(value || "").trim().toUpperCase()
+  if (!normalized) {
+    return ""
+  }
+
+  const segments = normalized
+    .split("-")
+    .map((item) => item.trim().toUpperCase())
+    .filter(Boolean)
+
+  if (segments.length === 0) {
+    return ""
+  }
+
+  if (!segments.every((item) => /^[0-9A-F]+$/.test(item))) {
+    throw new Error("特殊帧ID格式不正确")
+  }
+
+  if (segments.length === 1) {
+    return `${segments[0]}-${segments[0]}`
+  }
+
+  return `${segments[0]}-${segments[1]}`
+}
+
 export function buildUpgradeCqCode(config, burnFileType) {
-  const frameId = Number(config.commType) === 0x02 ? Number(config.frameId ?? 0x01) : 0x00
+  const frameId = Number(config.frameId ?? 0x01)
   const frameType = Number(config.commType) === 0x02 ? Number(config.frameType ?? 0x01) : 0x00
   const body = [
     normalizeNibble(config.commType, "通讯类型"),
@@ -123,8 +149,11 @@ export function buildUpgradeCqCode(config, burnFileType) {
     normalizeNibble(frameId, "帧ID"),
   ].join("")
 
-  const specialFrameValue = String(config.specialFrameValue || "").trim().toUpperCase()
-  if (frameId === 0x02 && specialFrameValue) {
+  const specialFrameValue = normalizeSpecialFrameValue(config.specialFrameValue)
+  if (frameId === 0x02) {
+    if (!specialFrameValue) {
+      throw new Error("请选择特殊帧ID后填写自定义帧ID")
+    }
     return `${CQ_PREFIX}${body}-${specialFrameValue}`
   }
 
@@ -140,8 +169,9 @@ export function parseUpgradeCqCode(input) {
     throw new Error("CQ 配置必须以 CQ 开头")
   }
 
-  const [prefixPart, suffixPart = ""] = normalized.split("-", 2)
-  const body = prefixPart.slice(CQ_PREFIX.length)
+  const bodyStart = CQ_PREFIX.length
+  const bodyEnd = bodyStart + CQ_BODY_LENGTH
+  const body = normalized.slice(bodyStart, bodyEnd)
   if (body.length !== CQ_BODY_LENGTH) {
     throw new Error("CQ 配置长度不正确")
   }
@@ -149,6 +179,7 @@ export function parseUpgradeCqCode(input) {
     throw new Error("CQ 配置格式不正确")
   }
 
+  const suffixPart = normalized.slice(bodyEnd).replace(/^-/, "")
   const values = body.split("").map((item) => Number.parseInt(item, 16))
   return {
     cqCode: normalized,
@@ -160,7 +191,7 @@ export function parseUpgradeCqCode(input) {
     protocolType: values[5],
     burnFileType: values[6],
     frameId: values[7],
-    specialFrameValue: suffixPart,
+    specialFrameValue: normalizeSpecialFrameValue(suffixPart),
   }
 }
 

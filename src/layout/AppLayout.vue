@@ -622,7 +622,7 @@ function syncCqGeneratorWithDevice() {
   cqGeneratorForm.commType = 0x00
   cqGeneratorForm.baudCode = Number(deviceStore.meterBaudCode ?? 0x0B)
   cqGeneratorForm.frameType = 0x00
-  cqGeneratorForm.frameId = 0x00
+  cqGeneratorForm.frameId = 0x01
   cqGeneratorForm.specialFrameValue = ""
 }
 
@@ -797,7 +797,7 @@ watch(
   (value) => {
     if (Number(value) !== 0x02) {
       cqGeneratorForm.frameType = 0x00
-      cqGeneratorForm.frameId = 0x00
+      cqGeneratorForm.frameId = 0x01
       cqGeneratorForm.specialFrameValue = ""
       return
     }

@@ -18,7 +18,7 @@ export default {
     manualModelRequired: "Please enter a model first",
     manualModelReadPending: "The CQ read API for model {model} is not wired yet",
     cqCode: "CQ Code",
-    cqCodePlaceholder: "Example: CQ04000110",
+    cqCodePlaceholder: "Example: CQ04000111",
     transportMode: "Transport Mode",
     meterBaudRate: "Meter Baud Rate",
     canFrameType: "CAN Frame Type",
