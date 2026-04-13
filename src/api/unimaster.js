@@ -60,20 +60,32 @@ export function prepareOfflineUpgrade(request) {
   return invoke("prepare_offline_upgrade", { request })
 }
 
+export function loadProgramBurningBundle(codeOrSn) {
+  return invoke("load_program_burning_bundle", { codeOrSn })
+}
+
 export function setMeterConfigTransport(request) {
   return invoke("set_meter_config_transport", { request })
 }
 
-export function readMeterConfig() {
-  return invoke("read_meter_config")
+export function readMeterConfig(request) {
+  return invoke("read_meter_config", { request })
 }
 
 export function writeMeterConfig(bytes) {
   return invoke("write_meter_config", { bytes })
 }
 
+export function sendMeterConfigHeartbeat(request) {
+  return invoke("send_meter_config_heartbeat", { request })
+}
+
 export function saveTextFile(path, contents) {
   return invoke("save_text_file", { path, contents })
+}
+
+export function frontendLog(level, message) {
+  return invoke("frontend_log", { level, message })
 }
 
 export async function fileToBytes(file) {

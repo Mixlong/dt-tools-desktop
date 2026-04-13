@@ -1,35 +1,39 @@
 <template>
   <div class="wiring-page">
     <div class="grid-two">
-      <div class="page-card image-card">
+      <div class="panel panel-card image-card">
         <div class="card-scroll">
-          <span class="section-eyebrow">Diagram</span>
-          <h3>接线流程图</h3>
+          <span class="section-eyebrow">{{ t("tools.wiring.page.diagram") }}</span>
+          <h3>{{ t("tools.wiring.page.title") }}</h3>
           <img src="/logo.png" alt="wiring guide" />
-          <p>首版先按型号和通信方式展示静态流程图，后续替换为真实接线素材。</p>
+          <p>{{ t("tools.wiring.page.description") }}</p>
         </div>
       </div>
-      <div class="page-card">
+      <div class="panel panel-card">
         <div class="card-scroll">
-          <span class="section-eyebrow">Procedure</span>
-          <h3>步骤说明</h3>
+          <span class="section-eyebrow">{{ t("tools.wiring.page.procedure") }}</span>
+          <h3>{{ t("tools.wiring.page.stepsTitle") }}</h3>
           <ol class="steps">
-            <li>确认当前型号与通信方式。</li>
-            <li>按照接线图依次连接电源、控制器、调试线束。</li>
-            <li>连接完成后在左侧设备入口选择正确端口。</li>
-            <li>确认在线状态后再进入抓包、配置或升级页面。</li>
+            <li v-for="item in steps" :key="item">{{ item }}</li>
           </ol>
-          <h4>注意事项</h4>
+          <h4>{{ t("tools.wiring.page.notesTitle") }}</h4>
           <ul class="clean-list">
-            <li>通电前再次确认正负极。</li>
-            <li>CAN 模式下确认波特率与帧类型一致。</li>
-            <li>异常发热或异响时立即断开连接。</li>
+            <li v-for="item in notes" :key="item">{{ item }}</li>
           </ul>
         </div>
       </div>
     </div>
   </div>
 </template>
+
+<script setup>
+import { computed } from "vue"
+import { useI18n } from "vue-i18n"
+
+const { t, tm } = useI18n()
+const steps = computed(() => tm("tools.wiring.page.steps"))
+const notes = computed(() => tm("tools.wiring.page.notes"))
+</script>
 
 <style scoped lang="scss">
 .wiring-page {
@@ -39,15 +43,7 @@
   min-height: 0;
 }
 
-.grid-two {
-  display: grid;
-  grid-template-columns: 1.1fr 0.9fr;
-  gap: 18px;
-  flex: 1;
-  min-height: 0;
-}
-
-.page-card {
+.panel-card {
   padding: 22px;
   min-height: 0;
 }

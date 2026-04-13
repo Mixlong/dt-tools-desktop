@@ -1,0 +1,37 @@
+export default {
+  actions: {
+    cancel: "Cancel",
+    clear: "Clear",
+    close: "Close",
+    confirm: "Confirm",
+    connect: "Connect",
+    disconnect: "Disconnect",
+    export: "Export",
+    import: "Import",
+    refresh: "Refresh",
+    save: "Save",
+    selectFile: "Select File",
+    send: "Send",
+    stop: "Stop",
+    viewDetails: "View Details",
+  },
+  fields: {
+    frameType: "Frame Type",
+    port: "Port",
+  },
+  messages: {
+    noSelection: "Not selected",
+    processing: "Processing...",
+    unnamedFile: "Unnamed file",
+  },
+  status: {
+    connected: "Connected",
+    disconnected: "Disconnected",
+    failed: "Failed",
+    idle: "Not started",
+    loading: "Processing",
+    paused: "Paused",
+    stopped: "Stopped",
+    success: "Success",
+  },
+}

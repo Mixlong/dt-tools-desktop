@@ -1,12 +1,15 @@
 use std::{
     io::ErrorKind,
     path::Path,
-    sync::Mutex,
-    time::{Duration, Instant},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex,
+    },
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use serde::{Deserialize, Serialize};
-use serialport::{ClearBuffer, SerialPort};
+use serialport::{ClearBuffer, DataBits, FlowControl, Parity, SerialPort, SerialPortType, StopBits, UsbPortInfo};
 
 const FRAME_START: u8 = 0x55;
 const THREE_A_FRAME_START: u8 = 0x3A;
@@ -14,7 +17,21 @@ const THREE_A_DEVICE_ADDRESS: u8 = 0x1A;
 const THREE_A_END_1: u8 = 0x0D;
 const THREE_A_END_2: u8 = 0x0A;
 const DEFAULT_TIMEOUT_MS: u64 = 1500;
+const UPGRADE_POST_ERASE_SETTLE_MS: u64 = 180;
+const UPGRADE_CHUNK_RETRY_ATTEMPTS: usize = 3;
+const UPGRADE_CHUNK_RETRY_DELAY_MS: u64 = 120;
+const METER_CONFIG_INIT_ATTEMPTS: usize = 2;
+const METER_CONFIG_INIT_TIMEOUT_MS: u64 = 1800;
+const METER_CONFIG_ACTIVITY_DETECT_MS: u64 = 220;
+const METER_CONFIG_READ_ATTEMPTS: usize = 4;
+const METER_CONFIG_READ_TIMEOUT_MS: u64 = 1800;
+const METER_CONFIG_PRE_READ_DRAIN_MAX_MS: u64 = 220;
+const METER_CONFIG_PRE_READ_QUIET_MS: u64 = 45;
 const VERSION_INFO_CODES: [u8; 9] = [0, 1, 2, 3, 4, 5, 6, 7, 8];
+const ALLOWED_USB_SERIAL_IDS: [(u16, u16); 1] = [
+    // 当前已验证的适配器：Qinheng CH340 / USB Serial
+    (0x1A86, 0x7523),
+];
 const FLAG_LABELS: [&str; 16] = [
     "老化进入标志",
     "老化",
@@ -33,9 +50,13 @@ const FLAG_LABELS: [&str; 16] = [
     "标志 14",
     "标志 15",
 ];
+const PROGRAM_BURNING_BASE_URL: &str = "http://test-pucs.riding-evolved.com";
+const PROGRAM_BURNING_SIGN_KEY: &str = "opeddsaeaddadbcabf";
+const PROGRAM_BURNING_CLIENT_ID: &str = "c4d89e9ed4f9d1c8d3e8bcee0684f076";
 
 pub struct SerialManager {
     connection: Mutex<Option<SerialConnection>>,
+    upgrade_active: AtomicBool,
 }
 
 struct SerialConnection {
@@ -48,6 +69,7 @@ impl Default for SerialManager {
     fn default() -> Self {
         Self {
             connection: Mutex::new(None),
+            upgrade_active: AtomicBool::new(false),
         }
     }
 }
@@ -57,6 +79,10 @@ impl Default for SerialManager {
 pub struct SerialPortInfo {
     pub port_name: String,
     pub port_type: String,
+    pub usb_vid: Option<u16>,
+    pub usb_pid: Option<u16>,
+    pub manufacturer: Option<String>,
+    pub product: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -65,6 +91,99 @@ pub struct ConnectionStatus {
     pub connected: bool,
     pub port_name: Option<String>,
     pub baud_rate: Option<u32>,
+}
+
+fn port_type_label(port_type: &SerialPortType) -> String {
+    match port_type {
+        SerialPortType::UsbPort(_) => "UsbPort".to_string(),
+        SerialPortType::PciPort => "PciPort".to_string(),
+        SerialPortType::BluetoothPort => "BluetoothPort".to_string(),
+        SerialPortType::Unknown => "Unknown".to_string(),
+    }
+}
+
+fn allowed_usb_serial_rank(usb_port: &UsbPortInfo) -> Option<usize> {
+    ALLOWED_USB_SERIAL_IDS
+        .iter()
+        .position(|(vid, pid)| usb_port.vid == *vid && usb_port.pid == *pid)
+}
+
+fn serial_port_usb_metadata(
+    port_type: &SerialPortType,
+) -> (Option<u16>, Option<u16>, Option<String>, Option<String>) {
+    match port_type {
+        SerialPortType::UsbPort(usb_port) => (
+            Some(usb_port.vid),
+            Some(usb_port.pid),
+            usb_port.manufacturer.clone(),
+            usb_port.product.clone(),
+        ),
+        _ => (None, None, None, None),
+    }
+}
+
+fn is_usable_serial_port(port: &serialport::SerialPortInfo) -> bool {
+    if port.port_name.trim().is_empty() {
+        return false;
+    }
+
+    match &port.port_type {
+        SerialPortType::UsbPort(usb_port) => allowed_usb_serial_rank(usb_port).is_some(),
+        _ => false,
+    }
+}
+
+fn serial_port_priority(port: &serialport::SerialPortInfo) -> usize {
+    match &port.port_type {
+        SerialPortType::UsbPort(usb_port) => {
+            allowed_usb_serial_rank(usb_port).unwrap_or(ALLOWED_USB_SERIAL_IDS.len())
+        }
+        _ => ALLOWED_USB_SERIAL_IDS.len() + 1,
+    }
+}
+
+fn collect_serial_ports() -> Result<Vec<serialport::SerialPortInfo>, String> {
+    let mut ports =
+        serialport::available_ports().map_err(|error| format!("读取串口列表失败: {error}"))?;
+
+    // 只保留白名单内的 USB 串口适配器，避免把蓝牙音频、调试口等伪串口当成目标设备。
+    ports.retain(is_usable_serial_port);
+    ports.sort_by(|left, right| {
+        serial_port_priority(left)
+            .cmp(&serial_port_priority(right))
+            .then_with(|| left.port_name.cmp(&right.port_name))
+    });
+
+    Ok(ports)
+}
+
+fn map_serial_open_error(message: &str, port_name: &str) -> String {
+    let normalized = message.to_ascii_lowercase();
+
+    if normalized.contains("no such file or directory") {
+        return format!(
+            "打开串口失败: 当前端口 {port_name} 不存在，设备可能已拔出或端口名称已变化，请刷新端口后重试"
+        );
+    }
+
+    if normalized.contains("device or resource busy")
+        || normalized.contains("access denied")
+        || normalized.contains("permission denied")
+        || normalized.contains("exclusive lock")
+        || normalized.contains("resource temporarily unavailable")
+        || normalized.contains("port is busy")
+    {
+        return format!("打开串口失败: 当前端口 {port_name} 被其他程序占用，请关闭占用程序后重试");
+    }
+
+    format!("打开串口失败: {message}")
+}
+
+pub fn list_serial_port_names() -> Result<Vec<String>, String> {
+    Ok(collect_serial_ports()?
+        .into_iter()
+        .map(|port| port.port_name)
+        .collect())
 }
 
 #[derive(Debug, Serialize)]
@@ -89,6 +208,18 @@ pub struct SimpleResult {
 pub struct MeterConfigReadResponse {
     pub bytes: Vec<u8>,
     pub hex: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MeterHeartbeatRequest {
+    pub comm_type: u8,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MeterConfigReadRequest {
+    pub comm_type: u8,
 }
 
 #[derive(Debug, Serialize)]
@@ -128,6 +259,7 @@ pub struct RawCommandRequest {
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct RealtimeInitRequest {
     pub comm_type: u8,
     pub baud_code: u8,
@@ -136,11 +268,15 @@ pub struct RealtimeInitRequest {
     pub vlk5v_enabled: bool,
     pub protocol_type: u8,
     pub burn_file_type: u8,
+    pub frame_id: Option<u8>,
+    pub cq_code: Option<String>,
     pub model: String,
+    pub file_name: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct OfflinePrepareRequest {
     pub power_voltage: u8,
     pub comm_type: u8,
@@ -204,6 +340,51 @@ pub struct UpgradeSummary {
     pub logs: Vec<String>,
 }
 
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct UpgradeProgressEvent {
+    pub progress: u8,
+    pub file_progress: u8,
+    pub stage: String,
+    pub kind: Option<String>,
+    pub file_name: Option<String>,
+    pub log: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProgramBurningApiResponse<T> {
+    code: u16,
+    msg: String,
+    data: T,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProgramBurningManifestItem {
+    pub file: String,
+    #[serde(rename = "type")]
+    pub resource_type: String,
+    pub computer_name: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProgramBurningBundle {
+    pub computer_name: String,
+    pub files: Vec<ProgramBurningAsset>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProgramBurningAsset {
+    pub kind: String,
+    pub file_name: String,
+    pub source_url: String,
+    pub size: usize,
+    pub text: Option<String>,
+    pub bytes: Option<Vec<u8>>,
+}
+
 #[derive(Debug)]
 struct Frame {
     command: u8,
@@ -231,7 +412,170 @@ struct DataChunk {
     data: Vec<u8>,
 }
 
+fn generate_program_burning_signature(url: &str, timestamp: u64) -> String {
+    let raw = format!("url={url}||t={timestamp}||key={PROGRAM_BURNING_SIGN_KEY}");
+    let first = format!("{:X}", md5::compute(raw));
+    format!("{:X}", md5::compute(&first[8..16]))
+}
+
+fn map_program_burning_kind(value: &str) -> Option<&'static str> {
+    match value.trim().to_uppercase().as_str() {
+        "BOOT" => Some("boot"),
+        "APP" => Some("app"),
+        "UI" => Some("ui"),
+        "JSON" | "CONFIG" => Some("config"),
+        _ => None,
+    }
+}
+
+fn resolve_program_burning_url(url: &str) -> String {
+    if url.starts_with("http://") || url.starts_with("https://") {
+        url.to_string()
+    } else {
+        format!("{PROGRAM_BURNING_BASE_URL}{url}")
+    }
+}
+
+fn extract_program_burning_file_name(url: &str, fallback: &str) -> String {
+    let sanitized = url.split('?').next().unwrap_or(url);
+    sanitized
+        .rsplit('/')
+        .next()
+        .filter(|item| !item.trim().is_empty())
+        .unwrap_or(fallback)
+        .to_string()
+}
+
+pub async fn load_program_burning_bundle(code_or_sn: String) -> Result<ProgramBurningBundle, String> {
+    let code_or_sn = code_or_sn.trim();
+    if code_or_sn.is_empty() {
+        return Err("请输入识别码或 SN".to_string());
+    }
+
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| format!("系统时间异常: {error}"))?
+        .as_secs();
+    let manifest_path = format!("/common/downloadPass/{code_or_sn}");
+    let sign = generate_program_burning_signature(&manifest_path, timestamp);
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(12))
+        .build()
+        .map_err(|error| format!("创建在线升级客户端失败: {error}"))?;
+
+    let manifest_response = client
+        .get(format!("{PROGRAM_BURNING_BASE_URL}{manifest_path}"))
+        .header("t", timestamp.to_string())
+        .header("sign", sign)
+        .header("id", PROGRAM_BURNING_CLIENT_ID)
+        .send()
+        .await
+        .map_err(|error| format!("获取在线升级资源失败: {error}"))?;
+
+    if !manifest_response.status().is_success() {
+        return Err(format!(
+            "获取在线升级资源失败，状态码 {}",
+            manifest_response.status()
+        ));
+    }
+
+    let payload = manifest_response
+        .json::<ProgramBurningApiResponse<Vec<ProgramBurningManifestItem>>>()
+        .await
+        .map_err(|error| format!("解析在线升级资源失败: {error}"))?;
+
+    if payload.code != 200 {
+        return Err(if payload.msg.trim().is_empty() {
+            "在线升级资源返回异常".to_string()
+        } else {
+            payload.msg
+        });
+    }
+
+    let computer_name = payload
+        .data
+        .first()
+        .and_then(|item| item.computer_name.clone())
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let mut files = Vec::new();
+
+    for item in payload.data {
+        let Some(kind) = map_program_burning_kind(&item.resource_type) else {
+            continue;
+        };
+
+        let resource_url = resolve_program_burning_url(&item.file);
+        let file_name = extract_program_burning_file_name(&item.file, kind);
+        let resource_response = client
+            .get(&resource_url)
+            .send()
+            .await
+            .map_err(|error| format!("下载 {file_name} 失败: {error}"))?;
+
+        if !resource_response.status().is_success() {
+            return Err(format!(
+                "下载 {file_name} 失败，状态码 {}",
+                resource_response.status()
+            ));
+        }
+
+        if kind == "config" {
+            let text = resource_response
+                .text()
+                .await
+                .map_err(|error| format!("读取 {file_name} 内容失败: {error}"))?;
+            let size = text.as_bytes().len();
+            files.push(ProgramBurningAsset {
+                kind: kind.to_string(),
+                file_name,
+                source_url: resource_url,
+                size,
+                text: Some(text),
+                bytes: None,
+            });
+            continue;
+        }
+
+        let bytes = resource_response
+            .bytes()
+            .await
+            .map_err(|error| format!("读取 {file_name} 数据失败: {error}"))?
+            .to_vec();
+        let size = bytes.len();
+        files.push(ProgramBurningAsset {
+            kind: kind.to_string(),
+            file_name,
+            source_url: resource_url,
+            size,
+            text: None,
+            bytes: Some(bytes),
+        });
+    }
+
+    Ok(ProgramBurningBundle {
+        computer_name,
+        files,
+    })
+}
+
 impl SerialManager {
+    pub fn is_upgrade_active(&self) -> bool {
+        self.upgrade_active.load(Ordering::SeqCst)
+    }
+
+    pub fn begin_upgrade(&self) -> Result<(), String> {
+        self.upgrade_active
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .map(|_| ())
+            .map_err(|_| "已有升级任务正在执行，请稍后重试".to_string())
+    }
+
+    pub fn end_upgrade(&self) {
+        self.upgrade_active.store(false, Ordering::SeqCst);
+    }
+
     pub fn status(&self) -> Result<ConnectionStatus, String> {
         let guard = self
             .connection
@@ -253,24 +597,13 @@ impl SerialManager {
 
     pub fn connect(&self, port_name: String, baud_rate: u32) -> Result<ConnectionStatus, String> {
         let mut port = serialport::new(&port_name, baud_rate)
-            .timeout(Duration::from_millis(100))
+            .data_bits(DataBits::Eight)
+            .parity(Parity::None)
+            .stop_bits(StopBits::One)
+            .flow_control(FlowControl::None)
+            .timeout(Duration::from_millis(10))
             .open()
-            .map_err(|error| {
-                let message = error.to_string();
-                if message.contains("No such file or directory") {
-                    return "打开串口失败: 当前端口不存在，设备可能已拔出或端口名称已变化，请刷新端口后重试"
-                        .to_string();
-                }
-                if message.contains("Device or resource busy")
-                    || message.contains("Access denied")
-                    || message.contains("Permission denied")
-                {
-                    return "打开串口失败: 当前端口被其他程序占用，请关闭占用程序后重试"
-                        .to_string();
-                }
-
-                format!("打开串口失败: {message}")
-            })?;
+            .map_err(|error| map_serial_open_error(&error.to_string(), &port_name))?;
 
         port.write_data_terminal_ready(true).ok();
         port.write_request_to_send(true).ok();
@@ -328,7 +661,10 @@ impl SerialManager {
         self.with_port(|port| {
             let request = build_frame(command, payload)?;
             if should_trace_serial(command) {
-                eprintln!("[serial][55][tx][cmd=0x{command:02X}] {}", bytes_to_hex(&request));
+                eprintln!(
+                    "[serial][55][tx][cmd=0x{command:02X}] {}",
+                    bytes_to_hex(&request)
+                );
             }
             port.clear(ClearBuffer::All).ok();
             port.write_all(&request)
@@ -346,16 +682,59 @@ impl SerialManager {
             })
         })
     }
+
+    pub fn send_command_success(
+        &self,
+        command: u8,
+        payload: &[u8],
+        timeout_ms: u64,
+    ) -> Result<bool, String> {
+        self.send_command_success_with_options(command, payload, timeout_ms, true)
+    }
+
+    pub fn send_command_success_with_options(
+        &self,
+        command: u8,
+        payload: &[u8],
+        timeout_ms: u64,
+        clear_before_send: bool,
+    ) -> Result<bool, String> {
+        self.with_port(|port| {
+            let request = build_frame(command, payload)?;
+            if should_trace_serial(command) {
+                eprintln!(
+                    "[serial][55][tx][cmd=0x{command:02X}] {}",
+                    bytes_to_hex(&request)
+                );
+            }
+            if clear_before_send {
+                port.clear(ClearBuffer::All).ok();
+            }
+            port.write_all(&request)
+                .map_err(|error| format!("发送失败: {error}"))?;
+            port.flush()
+                .map_err(|error| format!("刷新串口失败: {error}"))?;
+            let response = read_expected_frame(port, command, timeout_ms)?;
+            Ok(response.payload.first().copied().unwrap_or_default() != 0)
+        })
+    }
 }
 
 pub fn list_serial_ports() -> Result<Vec<SerialPortInfo>, String> {
-    let ports =
-        serialport::available_ports().map_err(|error| format!("读取串口列表失败: {error}"))?;
-    Ok(ports
+    Ok(collect_serial_ports()?
         .into_iter()
-        .map(|port| SerialPortInfo {
-            port_name: port.port_name,
-            port_type: format!("{:?}", port.port_type),
+        .map(|port| {
+            let (usb_vid, usb_pid, manufacturer, product) =
+                serial_port_usb_metadata(&port.port_type);
+
+            SerialPortInfo {
+                port_name: port.port_name,
+                port_type: port_type_label(&port.port_type),
+                usb_vid,
+                usb_pid,
+                manufacturer,
+                product,
+            }
         })
         .collect())
 }
@@ -494,76 +873,208 @@ pub fn set_meter_config_transport(
     manager: &SerialManager,
     request: MeterTransportRequest,
 ) -> Result<SimpleResult, String> {
-    let payload = [request.comm_type, request.baud_code, request.frame_type];
+    let started_at = Instant::now();
     let mut last_error = "串口已连接，但配置链路初始化未收到 0x37 响应".to_string();
-    let mut response = None;
+    let payload = [request.comm_type, request.baud_code, request.frame_type];
 
-    for _ in 0..3 {
-        match manager.send_command(0x37, &payload, DEFAULT_TIMEOUT_MS + 1000) {
-            Ok(exchange) => {
-                response = Some(exchange);
-                break;
+    eprintln!(
+        "[perf][config-init][start] commType=0x{:02X} baudCode=0x{:02X} frameType=0x{:02X}",
+        request.comm_type, request.baud_code, request.frame_type
+    );
+
+    if detect_three_a_activity(manager, METER_CONFIG_ACTIVITY_DETECT_MS).unwrap_or(false) {
+        eprintln!(
+            "[perf][config-init][short-circuit] totalMs={} reason=detected-3a-activity",
+            started_at.elapsed().as_millis()
+        );
+
+        return Ok(SimpleResult {
+            success: true,
+            message: "检测到设备已处于 3A 通讯状态，跳过 0x37 初始化".to_string(),
+        });
+    }
+
+    for attempt in 0..METER_CONFIG_INIT_ATTEMPTS {
+        let attempt_started_at = Instant::now();
+        match manager.send_command(0x37, &payload, METER_CONFIG_INIT_TIMEOUT_MS) {
+            Ok(response) => {
+                let payload = hex_to_bytes(&response.response_payload_hex)?;
+                let success = payload.first().copied().unwrap_or_default() == 1;
+
+                if success {
+                    if request.comm_type == 0x01 {
+                        prime_meter_config_uart(manager).map_err(|error| {
+                            format!("仪表配置通讯初始化成功，但 UART 心跳建立失败: {error}")
+                        })?;
+                    } else if request.comm_type == 0x02 {
+                        prime_meter_config_can(manager).map_err(|error| {
+                            format!("仪表配置通讯初始化成功，但 CAN 心跳建立失败: {error}")
+                        })?;
+                    }
+                }
+
+                let result = SimpleResult {
+                    success,
+                    message: if success {
+                        "仪表配置通讯初始化成功".to_string()
+                    } else {
+                        "仪表配置通讯初始化失败".to_string()
+                    },
+                };
+
+                eprintln!(
+                    "[perf][config-init][ok] attempt={} attemptMs={} totalMs={} success={}",
+                    attempt + 1,
+                    attempt_started_at.elapsed().as_millis(),
+                    started_at.elapsed().as_millis(),
+                    result.success
+                );
+
+                return Ok(result);
             }
             Err(error) => {
                 last_error = format!(
                     "串口已连接，但配置链路初始化失败: commType=0x{:02X}, baudCode=0x{:02X}, frameType=0x{:02X}; {}",
                     request.comm_type, request.baud_code, request.frame_type, error
                 );
+
+                eprintln!(
+                    "[perf][config-init][retry] attempt={} attemptMs={} totalMs={} error={}",
+                    attempt + 1,
+                    attempt_started_at.elapsed().as_millis(),
+                    started_at.elapsed().as_millis(),
+                    last_error
+                );
+
+                if error.contains("等待命令 0x37 响应超时")
+                    && detect_three_a_activity(manager, 600).unwrap_or(false)
+                {
+                    let result = SimpleResult {
+                        success: true,
+                        message: "检测到设备已处于 3A 通讯状态，跳过 0x37 初始化".to_string(),
+                    };
+
+                    eprintln!(
+                        "[perf][config-init][fallback-ok] attempt={} totalMs={} success={}",
+                        attempt + 1,
+                        started_at.elapsed().as_millis(),
+                        result.success
+                    );
+
+                    return Ok(result);
+                }
+
                 std::thread::sleep(Duration::from_millis(120));
             }
         }
     }
 
-    let Some(response) = response else {
-        if detect_active_3a_traffic(manager, 800)? {
-            if request.comm_type == 0x01 {
-                prime_meter_config_uart(manager).ok();
-            }
+    eprintln!(
+        "[perf][config-init][fail] totalMs={} error={}",
+        started_at.elapsed().as_millis(),
+        last_error
+    );
 
-            return Ok(SimpleResult {
-                success: true,
-                message: "检测到设备已处于 3A 通讯状态，跳过 0x37 初始化".to_string(),
-            });
-        }
-
-        return Err(last_error);
-    };
-
-    let payload = hex_to_bytes(&response.response_payload_hex)?;
-    let success = payload.first().copied().unwrap_or_default() == 1;
-
-    if success && request.comm_type == 0x01 {
-        prime_meter_config_uart(manager).ok();
-    }
-
-    Ok(SimpleResult {
-        success,
-        message: if success {
-            "仪表配置通讯初始化成功".to_string()
-        } else {
-            "仪表配置通讯初始化失败".to_string()
-        },
-    })
+    Err(last_error)
 }
 
-pub fn read_meter_config(manager: &SerialManager) -> Result<MeterConfigReadResponse, String> {
-    let mut last_error = "读取配置失败".to_string();
-    for _ in 0..20 {
-        match send_3a_command(manager, 0xC2, &[], 0xC3, 600) {
-            Ok(frame) => {
-                return Ok(MeterConfigReadResponse {
-                    hex: bytes_to_hex(&frame.payload),
-                    bytes: frame.payload,
-                });
+pub fn read_meter_config(
+    manager: &SerialManager,
+    request: MeterConfigReadRequest,
+) -> Result<MeterConfigReadResponse, String> {
+    let started_at = Instant::now();
+    eprintln!(
+        "[perf][config-read][start] commType=0x{:02X}",
+        request.comm_type
+    );
+
+    let payload = manager.with_port(|port| {
+        let request_frame = build_3a_frame(0xC2, &[])?;
+        let heartbeat_frame = if request.comm_type == 0x02 {
+            Some(build_3a_frame(0x01, &[0x01])?)
+        } else {
+            None
+        };
+        let mut last_error = "等待 3A 命令 0xC3 响应超时".to_string();
+
+        for attempt in 0..METER_CONFIG_READ_ATTEMPTS {
+            let attempt_started_at = Instant::now();
+            let drained = drain_serial_until_quiet(
+                port,
+                METER_CONFIG_PRE_READ_DRAIN_MAX_MS,
+                METER_CONFIG_PRE_READ_QUIET_MS,
+            )?;
+            if drained > 0 && should_trace_serial(0xC3) {
+                eprintln!(
+                    "[serial][3A][pre-read-drain][attempt={}] discarded={}B",
+                    attempt + 1,
+                    drained
+                );
             }
-            Err(error) => {
-                last_error = error;
-                std::thread::sleep(Duration::from_millis(120));
+
+            if let Some(heartbeat_frame) = &heartbeat_frame {
+                if should_trace_serial(0x01) {
+                    eprintln!(
+                        "[serial][3A][tx][cmd=0x01] {}",
+                        bytes_to_hex(heartbeat_frame)
+                    );
+                }
+                port.write_all(heartbeat_frame)
+                    .map_err(|error| format!("发送配置链路心跳失败: {error}"))?;
+                port.flush()
+                    .map_err(|error| format!("刷新串口失败: {error}"))?;
+            }
+
+            if should_trace_serial(0xC2) {
+                eprintln!("[serial][3A][tx][cmd=0xC2] {}", bytes_to_hex(&request_frame));
+            }
+
+            port.write_all(&request_frame)
+                .map_err(|error| format!("发送 3A 指令失败: {error}"))?;
+            port.flush()
+                .map_err(|error| format!("刷新串口失败: {error}"))?;
+
+            match read_meter_config_payload_compatible(port, METER_CONFIG_READ_TIMEOUT_MS) {
+                Ok(payload) => {
+                    eprintln!(
+                        "[perf][config-read][ok] attempt={} attemptMs={} totalMs={} payloadLen={}",
+                        attempt + 1,
+                        attempt_started_at.elapsed().as_millis(),
+                        started_at.elapsed().as_millis(),
+                        payload.len()
+                    );
+                    return Ok(payload);
+                }
+                Err(error) => {
+                    last_error = error;
+                    eprintln!(
+                        "[perf][config-read][retry] attempt={} attemptMs={} totalMs={} error={}",
+                        attempt + 1,
+                        attempt_started_at.elapsed().as_millis(),
+                        started_at.elapsed().as_millis(),
+                        last_error
+                    );
+
+                    if attempt + 1 < METER_CONFIG_READ_ATTEMPTS {
+                        std::thread::sleep(Duration::from_millis(80));
+                    }
+                }
             }
         }
-    }
 
-    Err(format!("读取配置失败: {last_error}"))
+        eprintln!(
+            "[perf][config-read][fail] totalMs={} error={}",
+            started_at.elapsed().as_millis(),
+            last_error
+        );
+
+        Err(last_error)
+    })?;
+
+    Ok(MeterConfigReadResponse {
+        hex: bytes_to_hex(&payload),
+        bytes: payload,
+    })
 }
 
 pub fn write_meter_config(manager: &SerialManager, bytes: Vec<u8>) -> Result<SimpleResult, String> {
@@ -582,6 +1093,33 @@ pub fn write_meter_config(manager: &SerialManager, bytes: Vec<u8>) -> Result<Sim
             "仪表参数写入失败"
         }
         .to_string(),
+    })
+}
+
+pub fn send_meter_config_heartbeat(
+    manager: &SerialManager,
+    request: MeterHeartbeatRequest,
+) -> Result<(), String> {
+    manager.with_port(|port| {
+        let (command, payload) = if request.comm_type == 0x02 {
+            (0x01, vec![0x01])
+        } else {
+            (0xAB, vec![0x01, 0x01, 0x00])
+        };
+
+        let frame = build_3a_frame(command, &payload)?;
+        if should_trace_serial(command) {
+            eprintln!(
+                "[serial][3A][heartbeat][cmd=0x{command:02X}] {}",
+                bytes_to_hex(&frame)
+            );
+        }
+
+        port.write_all(&frame)
+            .map_err(|error| format!("发送配置链路心跳失败: {error}"))?;
+        port.flush()
+            .map_err(|error| format!("刷新串口失败: {error}"))?;
+        Ok(())
     })
 }
 
@@ -618,24 +1156,8 @@ pub fn init_realtime_upgrade(
     manager: &SerialManager,
     request: RealtimeInitRequest,
 ) -> Result<SimpleResult, String> {
-    let model = request.model.as_bytes();
-    if model.len() > u8::MAX as usize {
-        return Err("机型名称过长".to_string());
-    }
-    let mut payload = vec![
-        request.comm_type,
-        request.baud_code,
-        request.frame_type,
-        request.power_voltage,
-        if request.vlk5v_enabled { 1 } else { 0 },
-        request.protocol_type,
-        request.burn_file_type,
-        model.len() as u8,
-    ];
-    payload.extend_from_slice(model);
-    let response = manager.send_command(0xA6, &payload, DEFAULT_TIMEOUT_MS)?;
-    let payload = hex_to_bytes(&response.response_payload_hex)?;
-    let success = payload.first().copied().unwrap_or_default() == 1;
+    let success = send_upgrade_param_command(manager, 0xA6, &request)?;
+
     Ok(SimpleResult {
         success,
         message: if success {
@@ -647,21 +1169,79 @@ pub fn init_realtime_upgrade(
     })
 }
 
-pub fn perform_realtime_upgrade(
+pub fn perform_realtime_upgrade<F>(
     manager: &SerialManager,
     request: RealtimeUpgradeRequest,
-) -> Result<UpgradeSummary, String> {
+    report_progress: F,
+) -> Result<UpgradeSummary, String>
+where
+    F: FnMut(UpgradeProgressEvent),
+{
     let mut logs = Vec::new();
+    let mut report_progress = report_progress;
+    let upgrade_started_at = Instant::now();
 
     let total_files = request.files.len().max(1);
     for (file_index, file) in request.files.iter().enumerate() {
+        let file_started_at = Instant::now();
         let kind = parse_upgrade_kind(&file.kind)?;
         let mut init_request = request.init.clone();
         init_request.burn_file_type = realtime_burn_type(kind);
+        init_request.file_name = Some(file.file_name.clone());
 
+        emit_upgrade_progress(
+            &mut report_progress,
+            file_index,
+            total_files,
+            file,
+            0,
+            format!("开始处理 {}", file.file_name),
+            Some(format!("开始处理 {}", file.file_name)),
+        );
+
+        let init_started_at = Instant::now();
+        let init_cq_code = init_request
+            .cq_code
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
         let init_result = init_realtime_upgrade(manager, init_request)?;
-        logs.push(format!("{}: {}", file.file_name, init_result.message));
+        eprintln!(
+            "[perf][upgrade][init] file={} kind={:?} ms={}",
+            file.file_name,
+            kind,
+            init_started_at.elapsed().as_millis()
+        );
+        let init_log = format!(
+            "{}: {}，耗时 {}",
+            file.file_name,
+            init_result.message,
+            format_elapsed(init_started_at.elapsed()),
+        );
+        logs.push(init_log.clone());
+        if let Some(cq_code) = init_cq_code {
+            logs.push(format!("{} 使用 CQ 配置 {}", file.file_name, cq_code));
+        }
+        emit_upgrade_progress(
+            &mut report_progress,
+            file_index,
+            total_files,
+            file,
+            5,
+            init_result.message.clone(),
+            Some(init_log),
+        );
         if !init_result.success {
+            emit_upgrade_progress(
+                &mut report_progress,
+                file_index,
+                total_files,
+                file,
+                5,
+                format!("{} 初始化失败", file.file_name),
+                Some(format!("{} 初始化失败", file.file_name)),
+            );
             return Ok(UpgradeSummary {
                 success: false,
                 progress: ((file_index * 100) / total_files) as u8,
@@ -670,8 +1250,59 @@ pub fn perform_realtime_upgrade(
             });
         }
 
+        let screen_started_at = Instant::now();
+        let screen = set_realtime_screen(manager, 0x00)?;
+        eprintln!(
+            "[perf][upgrade][screen] file={} ms={}",
+            file.file_name,
+            screen_started_at.elapsed().as_millis()
+        );
+        let screen_log = format!(
+            "{}，耗时 {}",
+            screen.message,
+            format_elapsed(screen_started_at.elapsed()),
+        );
+        logs.push(screen_log.clone());
+        emit_upgrade_progress(
+            &mut report_progress,
+            file_index,
+            total_files,
+            file,
+            8,
+            screen.message.clone(),
+            Some(screen_log),
+        );
+        if !screen.success {
+            return Ok(UpgradeSummary {
+                success: false,
+                progress: ((file_index * 100) / total_files) as u8,
+                stage: "切换实时界面失败".to_string(),
+                logs,
+            });
+        }
+
+        let access_started_at = Instant::now();
         let access = read_access_state(manager)?;
-        logs.push(access.message.clone());
+        eprintln!(
+            "[perf][upgrade][access] file={} ms={}",
+            file.file_name,
+            access_started_at.elapsed().as_millis()
+        );
+        let access_log = format!(
+            "{}，耗时 {}",
+            access.message,
+            format_elapsed(access_started_at.elapsed()),
+        );
+        logs.push(access_log.clone());
+        emit_upgrade_progress(
+            &mut report_progress,
+            file_index,
+            total_files,
+            file,
+            10,
+            access.message.clone(),
+            Some(access_log),
+        );
         if !access.success {
             return Ok(UpgradeSummary {
                 success: false,
@@ -681,8 +1312,7 @@ pub fn perform_realtime_upgrade(
             });
         }
 
-        logs.push(format!("开始处理 {}", file.file_name));
-
+        let erase_started_at = Instant::now();
         match kind {
             UpgradeKind::Boot => send_ack_command(manager, 0xE0, &[], "BOOT 擦除", &mut logs)?,
             UpgradeKind::App => send_ack_command(manager, 0xA7, &[], "APP 擦除", &mut logs)?,
@@ -690,17 +1320,101 @@ pub fn perform_realtime_upgrade(
             UpgradeKind::Config => {
                 let payload = build_3a_frame(0xC0, &file.data)?;
                 send_ack_command(manager, 0xAD, &payload, "配置文件写入", &mut logs)?;
-                logs.push(format!(
+                let config_write_log = format!(
+                    "{} 数据写入耗时 {}",
+                    file.file_name,
+                    format_elapsed(erase_started_at.elapsed()),
+                );
+                logs.push(config_write_log.clone());
+                emit_upgrade_progress(
+                    &mut report_progress,
+                    file_index,
+                    total_files,
+                    file,
+                    100,
+                    format!("{} 写入完成", file.file_name),
+                    Some(config_write_log),
+                );
+                let complete_log = format!(
                     "{} 已写入 ({}/{})",
                     file.file_name,
                     file_index + 1,
                     total_files
+                );
+                logs.push(complete_log);
+                logs.push(format!(
+                    "{} 全流程耗时 {}",
+                    file.file_name,
+                    format_elapsed(file_started_at.elapsed()),
                 ));
+                eprintln!(
+                    "[perf][upgrade][config-complete] file={} totalMs={}",
+                    file.file_name,
+                    file_started_at.elapsed().as_millis()
+                );
                 continue;
             }
         }
+        eprintln!(
+            "[perf][upgrade][erase] file={} kind={:?} ms={}",
+            file.file_name,
+            kind,
+            erase_started_at.elapsed().as_millis()
+        );
+        let erase_log = format!(
+            "{} 擦除耗时 {}",
+            file.file_name,
+            format_elapsed(erase_started_at.elapsed()),
+        );
+        logs.push(erase_log.clone());
 
+        emit_upgrade_progress(
+            &mut report_progress,
+            file_index,
+            total_files,
+            file,
+            15,
+            format!("{} 擦除完成", file.file_name),
+            Some(erase_log),
+        );
+        std::thread::sleep(Duration::from_millis(UPGRADE_POST_ERASE_SETTLE_MS));
+
+        let chunk_build_started_at = Instant::now();
         let chunks = build_chunks(&file.file_name, &file.data, kind)?;
+        let chunk_build_ms = chunk_build_started_at.elapsed().as_millis();
+        let average_chunk_size = chunks
+            .iter()
+            .map(|chunk| chunk.data.len())
+            .sum::<usize>()
+            / chunks.len().max(1);
+        eprintln!(
+            "[perf][upgrade][chunk-build] file={} kind={:?} bytes={} chunks={} avgChunk={} ms={}",
+            file.file_name,
+            kind,
+            file.data.len(),
+            chunks.len(),
+            average_chunk_size,
+            chunk_build_ms
+        );
+        let chunk_summary = format!(
+            "{} 分包 {} 个，平均 {} 字节/包",
+            file.file_name,
+            chunks.len(),
+            average_chunk_size
+        );
+        logs.push(chunk_summary.clone());
+        emit_upgrade_progress(
+            &mut report_progress,
+            file_index,
+            total_files,
+            file,
+            15,
+            format!("{} 擦除完成", file.file_name),
+            Some(chunk_summary),
+        );
+        let mut last_reported_progress = 15u8;
+        let mut last_logged_percent = 0u8;
+        let write_started_at = Instant::now();
         for (chunk_index, chunk) in chunks.iter().enumerate() {
             let (command, payload) = match kind {
                 UpgradeKind::Boot => (0xE1, chunk.data.clone()),
@@ -722,38 +1436,200 @@ pub fn perform_realtime_upgrade(
                 UpgradeKind::Config => unreachable!(),
             };
 
-            let response = manager.send_command(command, &payload, DEFAULT_TIMEOUT_MS)?;
-            let response_payload = hex_to_bytes(&response.response_payload_hex)?;
-            if response_payload.first().copied().unwrap_or_default() == 0 {
+            let write_ok = match send_upgrade_chunk_with_retry(
+                manager,
+                command,
+                &payload,
+                chunk_index + 1,
+                chunks.len(),
+            ) {
+                Ok(value) => value,
+                Err(error) => {
+                    let detail = format!(
+                        "{} 第 {}/{} 包写入失败: {}",
+                        file.file_name,
+                        chunk_index + 1,
+                        chunks.len(),
+                        error
+                    );
+                    logs.push(detail.clone());
+                    return Err(detail);
+                }
+            };
+
+            if !write_ok {
+                let detail = format!(
+                    "{} 第 {}/{} 包写入失败: 设备未确认",
+                    file.file_name,
+                    chunk_index + 1,
+                    chunks.len()
+                );
+                logs.push(detail.clone());
                 return Ok(UpgradeSummary {
                     success: false,
                     progress: ((file_index * 100) / total_files) as u8,
-                    stage: format!("{} 写入失败", file.file_name),
+                    stage: detail,
                     logs,
                 });
             }
-            logs.push(format!(
-                "{} 分片 {}/{} 写入成功",
-                file.file_name,
-                chunk_index + 1,
-                chunks.len()
-            ));
+
+            let chunk_progress = (15 + (((chunk_index + 1) * 80) / chunks.len().max(1)) as u8).min(95);
+
+            if chunk_progress > last_reported_progress {
+                last_reported_progress = chunk_progress;
+                emit_upgrade_progress(
+                    &mut report_progress,
+                    file_index,
+                    total_files,
+                    file,
+                    chunk_progress,
+                    format!("正在写入 {}", file.file_name),
+                    None,
+                );
+            }
+
+            let write_percent = (((chunk_index + 1) * 100) / chunks.len().max(1)) as u8;
+            if chunk_progress > last_logged_percent {
+                last_logged_percent = chunk_progress;
+                let elapsed = write_started_at.elapsed();
+                let average_ms = elapsed.as_millis() / (chunk_index + 1) as u128;
+                let progress_log = format!(
+                    "{} 总进度 {}%（写入 {}%，{}/{}），已用 {}，平均 {} ms/包",
+                    file.file_name,
+                    chunk_progress,
+                    write_percent,
+                    chunk_index + 1,
+                    chunks.len(),
+                    format_elapsed(elapsed),
+                    average_ms,
+                );
+                logs.push(progress_log.clone());
+                emit_upgrade_progress(
+                    &mut report_progress,
+                    file_index,
+                    total_files,
+                    file,
+                    chunk_progress,
+                    format!("正在写入 {}", file.file_name),
+                    Some(progress_log),
+                );
+            }
         }
 
-        send_ack_command(manager, 0xAB, &[], "升级数据写入完成", &mut logs)?;
-        logs.push(format!(
+        let write_elapsed = write_started_at.elapsed();
+        eprintln!(
+            "[perf][upgrade][write] file={} kind={:?} chunks={} totalMs={} avgMsPerChunk={}",
+            file.file_name,
+            kind,
+            chunks.len(),
+            write_elapsed.as_millis(),
+            write_elapsed.as_millis() / chunks.len().max(1) as u128,
+        );
+        let write_summary = format!(
+            "{} 数据写入耗时 {}，平均 {} ms/包",
+            file.file_name,
+            format_elapsed(write_elapsed),
+            write_elapsed.as_millis() / chunks.len().max(1) as u128,
+        );
+        logs.push(write_summary.clone());
+        emit_upgrade_progress(
+            &mut report_progress,
+            file_index,
+            total_files,
+            file,
+            95,
+            format!("正在写入 {}", file.file_name),
+            Some(write_summary),
+        );
+
+        let finish_started_at = Instant::now();
+        send_presence_command(manager, 0xAB, &[], "升级数据写入完成", &mut logs)?;
+        eprintln!(
+            "[perf][upgrade][finish] file={} ms={}",
+            file.file_name,
+            finish_started_at.elapsed().as_millis()
+        );
+        let complete_log = format!(
             "{} 已写入 ({}/{})",
             file.file_name,
             file_index + 1,
             total_files
-        ));
+        );
+        logs.push(complete_log.clone());
+        let file_summary = format!(
+            "{} 全流程耗时 {}",
+            file.file_name,
+            format_elapsed(file_started_at.elapsed()),
+        );
+        logs.push(file_summary.clone());
+        eprintln!(
+            "[perf][upgrade][file-complete] file={} totalMs={}",
+            file.file_name,
+            file_started_at.elapsed().as_millis()
+        );
+        emit_upgrade_progress(
+            &mut report_progress,
+            file_index,
+            total_files,
+            file,
+            100,
+            format!("{} 写入完成", file.file_name),
+            Some(file_summary),
+        );
     }
+    report_progress(UpgradeProgressEvent {
+        progress: 100,
+        file_progress: 100,
+        stage: "实时升级完成".to_string(),
+        kind: None,
+        file_name: None,
+        log: Some("实时升级完成".to_string()),
+    });
     Ok(UpgradeSummary {
         success: true,
         progress: 100,
         stage: "实时升级完成".to_string(),
         logs,
+    }).inspect(|_| {
+        eprintln!(
+            "[perf][upgrade][all-complete] files={} totalMs={}",
+            total_files,
+            upgrade_started_at.elapsed().as_millis()
+        );
     })
+}
+
+fn emit_upgrade_progress<F>(
+    report_progress: &mut F,
+    file_index: usize,
+    total_files: usize,
+    file: &UpgradeFile,
+    file_progress: u8,
+    stage: String,
+    log: Option<String>,
+) where
+    F: FnMut(UpgradeProgressEvent),
+{
+    let overall_progress =
+        ((file_index * 100) + usize::from(file_progress)).min(total_files * 100) / total_files;
+
+    report_progress(UpgradeProgressEvent {
+        progress: overall_progress as u8,
+        file_progress,
+        stage,
+        kind: Some(file.kind.clone()),
+        file_name: Some(file.file_name.clone()),
+        log,
+    });
+}
+
+fn format_elapsed(duration: Duration) -> String {
+    let millis = duration.as_millis();
+    if millis >= 1_000 {
+        format!("{:.2}s", millis as f64 / 1_000.0)
+    } else {
+        format!("{millis}ms")
+    }
 }
 
 pub fn prepare_offline_upgrade(
@@ -764,45 +1640,40 @@ pub fn prepare_offline_upgrade(
     let mut clear_mask = 0u8;
     for file in &request.files {
         clear_mask |= match parse_upgrade_kind(&file.kind)? {
-            UpgradeKind::Boot => 0b0001,
-            UpgradeKind::App => 0b0010,
-            UpgradeKind::Ui => 0b0100,
-            UpgradeKind::Config => 0b1000,
+            UpgradeKind::Boot => 0b1000,
+            UpgradeKind::App => 0b0100,
+            UpgradeKind::Ui => 0b0010,
+            UpgradeKind::Config => 0b0001,
         };
     }
+
+    let first_file_name = request
+        .files
+        .first()
+        .map(|file| file.file_name.as_str())
+        .ok_or_else(|| "请至少选择一个离线烧录文件".to_string())?;
+    match send_legacy_upgrade_param_command(manager, 0x17, first_file_name) {
+        Ok(true) => logs.push("写入离线烧录参数成功".to_string()),
+        Ok(false) | Err(_) => {
+            logs.push("标准离线烧录参数格式未通过，尝试旧版兼容格式".to_string());
+            send_offline_upgrade_param_command_with_logs(
+                manager,
+                0x17,
+                &request,
+                first_file_name,
+                "写入离线烧录参数",
+                &mut logs,
+            )?;
+        }
+    }
+
+    let screen = set_realtime_screen(manager, 0x01)?;
+    logs.push(screen.message.clone());
+    if !screen.success {
+        return Err(screen.message);
+    }
+
     send_bitmask_command(manager, 0x16, clear_mask, "清空升级缓冲区", &mut logs)?;
-
-    let model = request.model.as_bytes();
-    if model.len() > 120 {
-        return Err("机型名称过长".to_string());
-    }
-    let mut dut_payload = vec![
-        request.power_voltage,
-        request.comm_type,
-        request.boot_file_type,
-        request.app_file_type,
-        request.ui_file_type,
-        request.config_file_type,
-    ];
-    dut_payload.extend_from_slice(model);
-    send_ack_command(manager, 0x17, &dut_payload, "写入 DUT 机型信息", &mut logs)?;
-
-    let baud_payload = vec![
-        request.config_comm_type,
-        request.config_baud_code,
-        request.config_frame_type,
-    ];
-    send_ack_command(manager, 0x36, &baud_payload, "写入配置波特率", &mut logs)?;
-
-    if !request.ui_version.trim().is_empty() {
-        send_ack_command(
-            manager,
-            0x35,
-            request.ui_version.as_bytes(),
-            "写入 UI 版本号",
-            &mut logs,
-        )?;
-    }
 
     let total_files = request.files.len().max(1);
     let mut dispatch_mask = 0u8;
@@ -879,11 +1750,21 @@ fn send_ack_command(
     title: &str,
     logs: &mut Vec<String>,
 ) -> Result<(), String> {
-    let response = manager.send_command(command, payload, DEFAULT_TIMEOUT_MS)?;
-    let payload = hex_to_bytes(&response.response_payload_hex)?;
-    if payload.first().copied().unwrap_or_default() == 0 {
+    if !manager.send_command_success(command, payload, command_timeout_ms(command))? {
         return Err(format!("{title}失败"));
     }
+    logs.push(format!("{title}成功"));
+    Ok(())
+}
+
+fn send_presence_command(
+    manager: &SerialManager,
+    command: u8,
+    payload: &[u8],
+    title: &str,
+    logs: &mut Vec<String>,
+) -> Result<(), String> {
+    manager.send_command(command, payload, command_timeout_ms(command))?;
     logs.push(format!("{title}成功"));
     Ok(())
 }
@@ -898,6 +1779,71 @@ fn send_bitmask_command(
     let response = manager.send_command(command, &[mask], DEFAULT_TIMEOUT_MS)?;
     let payload = hex_to_bytes(&response.response_payload_hex)?;
     if payload.len() < 2 || payload[1] & mask != mask {
+        return Err(format!("{title}失败"));
+    }
+    logs.push(format!("{title}成功"));
+    Ok(())
+}
+
+fn send_upgrade_param_command(
+    manager: &SerialManager,
+    command: u8,
+    request: &RealtimeInitRequest,
+) -> Result<bool, String> {
+    let payload = build_upgrade_param_payload(request)?;
+    let response = manager.send_command(command, &payload, DEFAULT_TIMEOUT_MS)?;
+    let payload = hex_to_bytes(&response.response_payload_hex)?;
+    Ok(payload.first().copied().unwrap_or_default() == 1)
+}
+
+fn send_legacy_upgrade_param_command(
+    manager: &SerialManager,
+    command: u8,
+    file_name: &str,
+) -> Result<bool, String> {
+    let payload = build_legacy_upgrade_param_payload(file_name)?;
+    let response = manager.send_command(command, &payload, DEFAULT_TIMEOUT_MS)?;
+    let payload = hex_to_bytes(&response.response_payload_hex)?;
+    Ok(payload.first().copied().unwrap_or_default() == 1)
+}
+
+fn send_upgrade_param_command_with_logs(
+    manager: &SerialManager,
+    command: u8,
+    request: &RealtimeInitRequest,
+    title: &str,
+    logs: &mut Vec<String>,
+) -> Result<(), String> {
+    let success = send_upgrade_param_command(manager, command, request)?;
+    if !success {
+        return Err(format!("{title}失败"));
+    }
+    logs.push(format!("{title}成功"));
+    Ok(())
+}
+
+fn send_offline_upgrade_param_command(
+    manager: &SerialManager,
+    command: u8,
+    request: &OfflinePrepareRequest,
+    file_name: &str,
+) -> Result<bool, String> {
+    let payload = build_offline_upgrade_param_payload(request, file_name)?;
+    let response = manager.send_command(command, &payload, DEFAULT_TIMEOUT_MS)?;
+    let payload = hex_to_bytes(&response.response_payload_hex)?;
+    Ok(payload.first().copied().unwrap_or_default() == 1)
+}
+
+fn send_offline_upgrade_param_command_with_logs(
+    manager: &SerialManager,
+    command: u8,
+    request: &OfflinePrepareRequest,
+    file_name: &str,
+    title: &str,
+    logs: &mut Vec<String>,
+) -> Result<(), String> {
+    let success = send_offline_upgrade_param_command(manager, command, request, file_name)?;
+    if !success {
         return Err(format!("{title}失败"));
     }
     logs.push(format!("{title}成功"));
@@ -1001,7 +1947,10 @@ fn send_3a_command(
     manager.with_port(|port| {
         let request = build_3a_frame(command, payload)?;
         if should_trace_serial(command) {
-            eprintln!("[serial][3A][tx][cmd=0x{command:02X}] {}", bytes_to_hex(&request));
+            eprintln!(
+                "[serial][3A][tx][cmd=0x{command:02X}] {}",
+                bytes_to_hex(&request)
+            );
         }
         port.clear(ClearBuffer::All).ok();
         port.write_all(&request)
@@ -1027,29 +1976,19 @@ fn prime_meter_config_uart(manager: &SerialManager) -> Result<(), String> {
     Err(last_error)
 }
 
-fn detect_active_3a_traffic(manager: &SerialManager, timeout_ms: u64) -> Result<bool, String> {
-    manager.with_port(|port| {
-        let deadline = Instant::now() + Duration::from_millis(timeout_ms.max(100));
-        let mut buffer = Vec::new();
-
-        while Instant::now() < deadline {
-            let appended = append_serial_bytes(port, &mut buffer)?;
-            if appended > 0 {
-                eprintln!("[serial][3A][probe] {}", bytes_to_hex(&buffer));
-            }
-
-            while let Some(frame) = extract_3a_frame(&mut buffer)? {
-                eprintln!(
-                    "[serial][3A][detected-active][cmd=0x{:02X}] {}",
-                    frame.command,
-                    bytes_to_hex(&frame.payload)
-                );
-                return Ok(true);
+fn prime_meter_config_can(manager: &SerialManager) -> Result<(), String> {
+    let mut last_error = "CAN 心跳初始化失败".to_string();
+    for _ in 0..5 {
+        match send_3a_command(manager, 0x01, &[0x01], 0x01, 300) {
+            Ok(_) => return Ok(()),
+            Err(error) => {
+                last_error = error;
+                std::thread::sleep(Duration::from_millis(120));
             }
         }
+    }
 
-        Ok(false)
-    })
+    Err(last_error)
 }
 
 fn build_frame(command: u8, payload: &[u8]) -> Result<Vec<u8>, String> {
@@ -1095,12 +2034,10 @@ fn read_expected_frame(
     let deadline = Instant::now() + Duration::from_millis(timeout_ms.max(100));
     let mut buffer = Vec::new();
     while Instant::now() < deadline {
+        let chunk_start = buffer.len();
         let appended = append_serial_bytes(port, &mut buffer)?;
-        if appended > 0 && should_trace_serial(expected_command) {
-            eprintln!(
-                "[serial][55][rx-chunk][expect=0x{expected_command:02X}] {}",
-                bytes_to_hex(&buffer)
-            );
+        if appended > 0 {
+            trace_serial_chunk("55", expected_command, &buffer[chunk_start..]);
         }
         while let Some(frame) = extract_frame(&mut buffer)? {
             if should_trace_serial(expected_command) {
@@ -1132,12 +2069,10 @@ fn read_expected_3a_frame(
     let deadline = Instant::now() + Duration::from_millis(timeout_ms.max(100));
     let mut buffer = Vec::new();
     while Instant::now() < deadline {
+        let chunk_start = buffer.len();
         let appended = append_serial_bytes(port, &mut buffer)?;
-        if appended > 0 && should_trace_serial(expected_command) {
-            eprintln!(
-                "[serial][3A][rx-chunk][expect=0x{expected_command:02X}] {}",
-                bytes_to_hex(&buffer)
-            );
+        if appended > 0 {
+            trace_serial_chunk("3A", expected_command, &buffer[chunk_start..]);
         }
         while let Some(frame) = extract_3a_frame(&mut buffer)? {
             if should_trace_serial(expected_command) {
@@ -1162,6 +2097,107 @@ fn read_expected_3a_frame(
     Err(format!("等待 3A 命令 0x{expected_command:02X} 响应超时"))
 }
 
+fn read_meter_config_payload_compatible(
+    port: &mut dyn SerialPort,
+    timeout_ms: u64,
+) -> Result<Vec<u8>, String> {
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms.max(100));
+    let mut buffer = Vec::new();
+
+    while Instant::now() < deadline {
+        let chunk_start = buffer.len();
+        let appended = append_serial_bytes(port, &mut buffer)?;
+        if appended > 0 {
+            trace_serial_chunk("3A", 0xC3, &buffer[chunk_start..]);
+        }
+
+        while let Some(frame) = extract_3a_frame(&mut buffer)? {
+            if should_trace_serial(0xC3) {
+                eprintln!(
+                    "[serial][3A][rx-frame][cmd=0x{:02X}] {}",
+                    frame.command,
+                    bytes_to_hex(&frame.payload)
+                );
+            }
+            if frame.command == 0xC3 {
+                return Ok(frame.payload);
+            }
+        }
+
+        if let Some(payload) = extract_legacy_meter_config_payload(&buffer) {
+            if should_trace_serial(0xC3) {
+                eprintln!(
+                    "[serial][3A][legacy-c3][payload] {}",
+                    bytes_to_hex(&payload)
+                );
+            }
+            buffer.clear();
+            return Ok(payload);
+        }
+    }
+
+    if should_trace_serial(0xC3) && !buffer.is_empty() {
+        eprintln!(
+            "[serial][3A][timeout][expect=0xC3] buffered={}",
+            bytes_to_hex(&buffer)
+        );
+    }
+
+    Err("等待 3A 命令 0xC3 响应超时".to_string())
+}
+
+fn extract_legacy_meter_config_payload(buffer: &[u8]) -> Option<Vec<u8>> {
+    const LEGACY_CONFIG_PAYLOAD_LEN: usize = 49;
+
+    let start_index = buffer
+        .windows(4)
+        .position(|window| {
+            window[0] == THREE_A_FRAME_START
+                && window[1] == THREE_A_DEVICE_ADDRESS
+                && window[2] == 0xC3
+        })?;
+
+    let length = *buffer.get(start_index + 3)? as usize;
+    if length < LEGACY_CONFIG_PAYLOAD_LEN {
+        return None;
+    }
+
+    let payload_start = start_index + 4;
+    let payload_end = payload_start + LEGACY_CONFIG_PAYLOAD_LEN;
+    if buffer.len() < payload_end {
+        return None;
+    }
+
+    Some(buffer[payload_start..payload_end].to_vec())
+}
+
+fn detect_three_a_activity(manager: &SerialManager, timeout_ms: u64) -> Result<bool, String> {
+    manager.with_port(|port| {
+        let deadline = Instant::now() + Duration::from_millis(timeout_ms.max(100));
+        let mut buffer = Vec::new();
+
+        while Instant::now() < deadline {
+            let appended = append_serial_bytes(port, &mut buffer)?;
+            if appended == 0 {
+                continue;
+            }
+
+            while let Some(frame) = extract_3a_frame(&mut buffer)? {
+                if should_trace_serial(frame.command) {
+                    eprintln!(
+                        "[serial][3A][detected][cmd=0x{:02X}] {}",
+                        frame.command,
+                        bytes_to_hex(&frame.payload)
+                    );
+                }
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
+    })
+}
+
 fn append_serial_bytes(port: &mut dyn SerialPort, buffer: &mut Vec<u8>) -> Result<usize, String> {
     let mut chunk = [0u8; 256];
     match port.read(&mut chunk) {
@@ -1175,8 +2211,217 @@ fn append_serial_bytes(port: &mut dyn SerialPort, buffer: &mut Vec<u8>) -> Resul
     }
 }
 
+fn trace_serial_chunk(protocol: &str, expected_command: u8, chunk: &[u8]) {
+    if chunk.is_empty() || !should_trace_serial(expected_command) {
+        return;
+    }
+
+    eprintln!(
+        "[serial][{protocol}][rx-chunk][expect=0x{expected_command:02X}] {}",
+        bytes_to_hex(chunk)
+    );
+}
+
+fn drain_serial_until_quiet(
+    port: &mut dyn SerialPort,
+    max_wait_ms: u64,
+    quiet_ms: u64,
+) -> Result<usize, String> {
+    let deadline = Instant::now() + Duration::from_millis(max_wait_ms.max(20));
+    let quiet_window = Duration::from_millis(quiet_ms.max(10));
+    let mut total_drained = 0usize;
+    let mut last_rx_at = Instant::now();
+
+    loop {
+        let mut chunk = [0u8; 256];
+        match port.read(&mut chunk) {
+            Ok(0) => {}
+            Ok(read) => {
+                total_drained += read;
+                last_rx_at = Instant::now();
+                continue;
+            }
+            Err(error) if error.kind() == ErrorKind::TimedOut => {}
+            Err(error) => return Err(format!("读取串口数据失败: {error}")),
+        }
+
+        let now = Instant::now();
+        if total_drained == 0 || now.duration_since(last_rx_at) >= quiet_window || now >= deadline {
+            return Ok(total_drained);
+        }
+    }
+}
+
 fn should_trace_serial(command: u8) -> bool {
-    matches!(command, 0x37 | 0xAB | 0xC0 | 0xC1 | 0xC2 | 0xC3)
+    if std::env::var("DT_TRACE_SERIAL")
+        .map(|value| value == "1")
+        .unwrap_or(false)
+    {
+        return true;
+    }
+
+    matches!(
+        command,
+        0x14 | 0x16 | 0x17 | 0x20 | 0x30 | 0x34 | 0x37 | 0xA6 | 0xA7 | 0xA8 | 0xA9 | 0xAA | 0xAB | 0xAD | 0xAF | 0xC0 | 0xC1 | 0xE0 | 0xE1
+    )
+}
+
+fn build_legacy_upgrade_param_payload(file_name: &str) -> Result<Vec<u8>, String> {
+    let normalized = Path::new(file_name)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or(file_name)
+        .trim()
+        .to_string();
+
+    if normalized.is_empty() {
+        return Err("升级文件名为空".to_string());
+    }
+
+    let bytes = normalized.into_bytes();
+    if bytes.len() > u8::MAX as usize {
+        return Err("升级文件名过长".to_string());
+    }
+
+    Ok(bytes)
+}
+
+fn build_upgrade_param_payload(request: &RealtimeInitRequest) -> Result<Vec<u8>, String> {
+    let burn_file_type = request.burn_file_type;
+    let maybe_cq_code = request
+        .cq_code
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+
+    if matches!(burn_file_type, 1 | 2) {
+        let cq_code = maybe_cq_code.ok_or_else(|| "APP/UI 升级缺少 CQ 配置串".to_string())?;
+        let cq_bytes = cq_code.as_bytes();
+        if cq_bytes.len() > u8::MAX as usize {
+            return Err("CQ 配置串过长".to_string());
+        }
+
+        let mut payload = vec![
+            request.comm_type,
+            request.baud_code,
+            request.frame_type,
+            request.power_voltage,
+            if request.vlk5v_enabled { 1 } else { 0 },
+            request.protocol_type,
+            burn_file_type,
+            request.frame_id.unwrap_or(0),
+        ];
+        payload.extend_from_slice(cq_bytes);
+        return Ok(payload);
+    }
+
+    let file_name = request
+        .file_name
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(request.model.as_str());
+    build_legacy_upgrade_param_payload(file_name)
+}
+
+fn build_offline_upgrade_param_payload(
+    request: &OfflinePrepareRequest,
+    file_name: &str,
+) -> Result<Vec<u8>, String> {
+    let extension = Path::new(file_name)
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+
+    if extension.is_empty() {
+        return Err("离线烧录文件后缀为空".to_string());
+    }
+
+    let file_type_code = match extension.as_str() {
+        "txt" => 0,
+        "bin" => 1,
+        "json" => 2,
+        "ini" => 3,
+        "hex" => 4,
+        _ => return Err(format!("不支持的离线烧录文件后缀: {extension}")),
+    };
+
+    let power = if request.power_voltage == 0xFF {
+        1
+    } else {
+        request.power_voltage
+    };
+    let communicate_type = if request.comm_type == 0x02 { 1 } else { 0 };
+    let mut payload = vec![power, communicate_type, file_type_code];
+    payload.extend_from_slice(extension.as_bytes());
+    payload.extend_from_slice(request.model.trim().as_bytes());
+    Ok(payload)
+}
+
+fn command_timeout_ms(command: u8) -> u64 {
+    match command {
+        0xE0 | 0xA7 | 0xA9 => 8_000,
+        _ => DEFAULT_TIMEOUT_MS,
+    }
+}
+
+fn upgrade_chunk_timeout_ms(command: u8) -> u64 {
+    match command {
+        0xAA => 3_000,
+        0xA8 | 0xE1 => 2_000,
+        _ => DEFAULT_TIMEOUT_MS,
+    }
+}
+
+fn send_upgrade_chunk_with_retry(
+    manager: &SerialManager,
+    command: u8,
+    payload: &[u8],
+    chunk_number: usize,
+    total_chunks: usize,
+) -> Result<bool, String> {
+    let timeout_ms = upgrade_chunk_timeout_ms(command);
+    let mut last_error = None;
+
+    for attempt in 0..UPGRADE_CHUNK_RETRY_ATTEMPTS {
+        match manager.send_command_success_with_options(
+            command,
+            payload,
+            timeout_ms,
+            attempt > 0,
+        ) {
+            Ok(true) => return Ok(true),
+            Ok(false) => {
+                if attempt + 1 == UPGRADE_CHUNK_RETRY_ATTEMPTS {
+                    return Ok(false);
+                }
+                eprintln!(
+                    "[serial][55][retry][cmd=0x{command:02X}] chunk={}/{} attempt={} reason=nack",
+                    chunk_number,
+                    total_chunks,
+                    attempt + 1
+                );
+            }
+            Err(error) => {
+                if attempt + 1 == UPGRADE_CHUNK_RETRY_ATTEMPTS {
+                    return Err(error);
+                }
+                eprintln!(
+                    "[serial][55][retry][cmd=0x{command:02X}] chunk={}/{} attempt={} reason={}",
+                    chunk_number,
+                    total_chunks,
+                    attempt + 1,
+                    error
+                );
+                last_error = Some(error);
+            }
+        }
+
+        std::thread::sleep(Duration::from_millis(UPGRADE_CHUNK_RETRY_DELAY_MS));
+    }
+
+    Err(last_error.unwrap_or_else(|| "升级分包写入失败".to_string()))
 }
 
 fn extract_frame(buffer: &mut Vec<u8>) -> Result<Option<Frame>, String> {
@@ -1201,9 +2446,7 @@ fn extract_frame(buffer: &mut Vec<u8>) -> Result<Option<Frame>, String> {
         }
 
         let raw = buffer[..total].to_vec();
-        let expected = raw[..total - 1]
-            .iter()
-            .fold(0u8, |acc, value| acc ^ value);
+        let expected = raw[..total - 1].iter().fold(0u8, |acc, value| acc ^ value);
         if raw[total - 1] != expected {
             buffer.drain(..1);
             continue;
@@ -1221,7 +2464,10 @@ fn extract_frame(buffer: &mut Vec<u8>) -> Result<Option<Frame>, String> {
 
 fn extract_3a_frame(buffer: &mut Vec<u8>) -> Result<Option<ThreeAFrame>, String> {
     loop {
-        let Some(start_index) = buffer.iter().position(|value| *value == THREE_A_FRAME_START) else {
+        let Some(start_index) = buffer
+            .iter()
+            .position(|value| *value == THREE_A_FRAME_START)
+        else {
             buffer.clear();
             return Ok(None);
         };
@@ -1235,24 +2481,49 @@ fn extract_3a_frame(buffer: &mut Vec<u8>) -> Result<Option<ThreeAFrame>, String>
         }
 
         let length = buffer[3] as usize;
+        let malformed_total = length + 7;
         let total = length + 8;
-        if buffer.len() < total {
+        if buffer.len() < malformed_total {
             return Ok(None);
         }
 
-        let raw = buffer[..total].to_vec();
-        if raw[1] != THREE_A_DEVICE_ADDRESS {
+        if buffer[1] != THREE_A_DEVICE_ADDRESS {
             buffer.drain(..1);
             continue;
         }
 
-        if raw[total - 2] != THREE_A_END_1 || raw[total - 1] != THREE_A_END_2 {
+        if buffer.len() >= total {
+            let raw = buffer[..total].to_vec();
+
+            if raw[total - 2] == THREE_A_END_1 && raw[total - 1] == THREE_A_END_2 {
+                let checksum = u16::from_le_bytes([raw[total - 4], raw[total - 3]]);
+                let expected = raw[1..total - 4]
+                    .iter()
+                    .fold(0u16, |acc, value| acc.wrapping_add(*value as u16));
+                if checksum == expected {
+                    let frame = ThreeAFrame {
+                        command: raw[2],
+                        payload: raw[4..total - 4].to_vec(),
+                    };
+                    buffer.drain(..total);
+                    return Ok(Some(frame));
+                }
+            }
+        }
+
+        // 某些设备偶发丢失结尾的 0x0A，但长度、校验和 0x0D 仍然正确。
+        // 在这种情况下先按“缺失尾字节”的 3A 帧容错解析，避免整包 C3 配置报废。
+        let malformed_raw = buffer[..malformed_total].to_vec();
+        if malformed_raw[malformed_total - 1] != THREE_A_END_1 {
             buffer.drain(..1);
             continue;
         }
 
-        let checksum = u16::from_le_bytes([raw[total - 4], raw[total - 3]]);
-        let expected = raw[1..total - 4]
+        let checksum = u16::from_le_bytes([
+            malformed_raw[malformed_total - 3],
+            malformed_raw[malformed_total - 2],
+        ]);
+        let expected = malformed_raw[1..malformed_total - 3]
             .iter()
             .fold(0u16, |acc, value| acc.wrapping_add(*value as u16));
         if checksum != expected {
@@ -1261,10 +2532,10 @@ fn extract_3a_frame(buffer: &mut Vec<u8>) -> Result<Option<ThreeAFrame>, String>
         }
 
         let frame = ThreeAFrame {
-            command: raw[2],
-            payload: raw[4..total - 4].to_vec(),
+            command: malformed_raw[2],
+            payload: malformed_raw[4..malformed_total - 3].to_vec(),
         };
-        buffer.drain(..total);
+        buffer.drain(..malformed_total);
         return Ok(Some(frame));
     }
 }
@@ -1306,6 +2577,7 @@ fn build_chunks(file_name: &str, data: &[u8], kind: UpgradeKind) -> Result<Vec<D
 
     match (kind, extension.as_str()) {
         (UpgradeKind::App, "hex") => build_hex_chunks(data, 112),
+        (UpgradeKind::Ui, "txt") => build_sequential_chunks(&parse_hex_text_bytes(data)?, 128, true),
         (_, "txt") => build_sequential_chunks(&parse_hex_text_bytes(data)?, 128, true),
         (UpgradeKind::Boot, _) => build_sequential_chunks(data, 128, true),
         (UpgradeKind::Ui, _) => build_sequential_chunks(data, 128, true),
@@ -1418,8 +2690,21 @@ fn build_hex_chunks(data: &[u8], chunk_size: usize) -> Result<Vec<DataChunk>, St
         return Err("HEX 文件没有有效数据记录".to_string());
     }
 
+    let mut merged_entries: Vec<(u32, Vec<u8>)> = Vec::new();
+    for (address, bytes) in entries {
+        if let Some((base_address, merged_bytes)) = merged_entries.last_mut() {
+            let next_address = *base_address + merged_bytes.len() as u32;
+            if address == next_address {
+                merged_bytes.extend_from_slice(&bytes);
+                continue;
+            }
+        }
+
+        merged_entries.push((address, bytes));
+    }
+
     let mut chunks = Vec::new();
-    for (base_address, bytes) in entries {
+    for (base_address, bytes) in merged_entries {
         for (offset, chunk) in bytes.chunks(chunk_size).enumerate() {
             chunks.push(DataChunk {
                 address: Some(base_address + (offset * chunk_size) as u32),

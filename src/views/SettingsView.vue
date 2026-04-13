@@ -1,65 +1,133 @@
 <template>
   <div class="settings-page">
-    <section class="page-intro">
-      <div>
-        <span class="section-eyebrow">System Preferences</span>
-        <h2>系统设置</h2>
-        <p>保持桌面工具的默认工作路径、启动行为和更新策略一致，避免现场环境因为配置分散而失控。</p>
-      </div>
-    </section>
+    <div class="settings-shell">
+      <aside class="settings-aside">
+        <q-card flat bordered class="settings-summary">
+          <q-card-section class="settings-summary__head">
+            <span class="settings-eyebrow">SYSTEM PREFERENCES</span>
+            <h1>{{ t("settings.title") }}</h1>
+            <p>{{ t("settings.description") }}</p>
+          </q-card-section>
 
-    <div class="settings-grid">
-      <section class="page-card settings-panel settings-panel--primary">
-        <div class="panel-head">
-          <div>
-            <span class="section-eyebrow">Runtime</span>
-            <h3>运行与更新</h3>
-            <p>面向本机环境的基础设置，优先保证启动和升级流程稳定。</p>
-          </div>
-        </div>
-        <div class="panel-body">
-          <el-form label-position="top" class="settings-form">
-            <div class="setting-block">
-              <div class="setting-block__copy">
-                <strong>默认日志目录</strong>
-                <p>用于保存抓包结果、升级日志和错误追踪。</p>
+          <q-separator />
+
+          <q-card-section class="settings-summary__body">
+            <div class="settings-summary__item">
+              <div class="settings-summary__icon settings-summary__icon--path">
+                <q-icon name="folder_open" size="18px" />
               </div>
-              <el-form-item label="日志输出路径">
-                <div class="path-field">
-                  <el-input v-model="form.logDirectory" @change="saveAllPreferences" />
-                  <el-button :disabled="!isTauriDesktop" @click="selectLogDirectory">选择目录</el-button>
-                </div>
-              </el-form-item>
+              <div class="settings-summary__copy">
+                <span>{{ t("settings.logDirectory.title") }}</span>
+                <strong>{{ form.logDirectory ? "已配置" : "未配置" }}</strong>
+              </div>
             </div>
 
-            <div class="setting-block setting-block--compact">
-              <div class="setting-block__copy">
-                <strong>开机自启</strong>
-                <p>适合固定工位环境，减少重复打开工具的操作。</p>
+            <div class="settings-summary__item">
+              <div class="settings-summary__icon settings-summary__icon--startup">
+                <q-icon name="power_settings_new" size="18px" />
               </div>
-              <el-switch v-model="form.autostart" :loading="loading.autostart" @change="handleAutostartChange" />
+              <div class="settings-summary__copy">
+                <span>{{ t("settings.autostart.title") }}</span>
+                <strong>{{ form.autostart ? "已开启" : "已关闭" }}</strong>
+              </div>
             </div>
 
-            <div class="setting-block setting-block--compact">
-              <div class="setting-block__copy">
-                <strong>启动时检查更新</strong>
-                <p>保持升级工具和协议逻辑处于最新发布版本。</p>
+            <div class="settings-summary__item">
+              <div class="settings-summary__icon settings-summary__icon--update">
+                <q-icon name="system_update_alt" size="18px" />
               </div>
-              <el-switch v-model="form.checkUpdatesOnLaunch" @change="saveAllPreferences" />
+              <div class="settings-summary__copy">
+                <span>{{ t("settings.updates.title") }}</span>
+                <strong>{{ form.checkUpdatesOnLaunch ? "已开启" : "已关闭" }}</strong>
+              </div>
             </div>
-          </el-form>
-        </div>
+          </q-card-section>
+        </q-card>
+      </aside>
+
+      <section class="settings-main">
+        <q-card flat bordered class="settings-panel">
+          <q-card-section class="settings-panel__head">
+            <div>
+              <span class="settings-panel__eyebrow">Storage</span>
+              <h2>{{ t("settings.logDirectory.title") }}</h2>
+              <p>{{ t("settings.logDirectory.description") }}</p>
+            </div>
+          </q-card-section>
+
+          <q-separator />
+
+          <q-card-section class="settings-panel__body">
+            <div class="settings-field">
+              <label>{{ t("settings.logDirectory.title") }}</label>
+              <q-input v-model="form.logDirectory" outlined dense :bg-color="undefined" @update:model-value="saveAllPreferences">
+                <template #prepend>
+                  <q-icon name="folder_open" />
+                </template>
+                <template #append>
+                  <q-btn
+                    flat
+                    dense
+                    no-caps
+                    color="primary"
+                    :label="t('settings.logDirectory.select')"
+                    :disable="!isTauriDesktop"
+                    @click="selectLogDirectory"
+                  />
+                </template>
+              </q-input>
+            </div>
+          </q-card-section>
+        </q-card>
+
+        <q-card flat bordered class="settings-panel">
+          <q-card-section class="settings-row">
+            <div class="settings-row__copy">
+              <span class="settings-panel__eyebrow">Boot</span>
+              <h3>{{ t("settings.autostart.title") }}</h3>
+              <p>{{ t("settings.autostart.description") }}</p>
+            </div>
+            <q-toggle
+              v-model="form.autostart"
+              checked-icon="done"
+              unchecked-icon="close"
+              color="primary"
+              :disable="loading.autostart"
+              @update:model-value="handleAutostartChange"
+            />
+          </q-card-section>
+        </q-card>
+
+        <q-card flat bordered class="settings-panel">
+          <q-card-section class="settings-row">
+            <div class="settings-row__copy">
+              <span class="settings-panel__eyebrow">Updates</span>
+              <h3>{{ t("settings.updates.title") }}</h3>
+              <p>{{ t("settings.updates.description") }}</p>
+            </div>
+            <q-toggle
+              v-model="form.checkUpdatesOnLaunch"
+              checked-icon="done"
+              unchecked-icon="close"
+              color="primary"
+              @update:model-value="saveAllPreferences"
+            />
+          </q-card-section>
+        </q-card>
       </section>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ElMessage } from "element-plus"
 import { documentDir, join } from "@tauri-apps/api/path"
 import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart"
 import { open } from "@tauri-apps/plugin-dialog"
+import { useI18n } from "vue-i18n"
+import { notifyError, notifyInfo, notifySuccess } from "@/services/ui"
 import { DEFAULT_PREFERENCES, loadPreferences, savePreferences } from "@/utils/preferences"
+
+const { t } = useI18n()
 
 const form = reactive({
   ...DEFAULT_PREFERENCES,
@@ -73,6 +141,8 @@ const loading = reactive({
 const isTauriDesktop = typeof window !== "undefined" && Boolean(window.__TAURI_INTERNALS__)
 
 onMounted(async () => {
+  saveAllPreferences()
+
   if (!form.logDirectory) {
     try {
       const docs = await documentDir()
@@ -100,7 +170,7 @@ function saveAllPreferences() {
 
 async function selectLogDirectory() {
   if (!isTauriDesktop) {
-    ElMessage.info("仅桌面应用支持系统目录选择器")
+    notifyInfo(t("settings.logDirectory.desktopOnly"))
     return
   }
 
@@ -115,9 +185,9 @@ async function selectLogDirectory() {
 
     form.logDirectory = selected
     saveAllPreferences()
-    ElMessage.success("日志目录已更新")
+    notifySuccess(t("settings.logDirectory.updated"))
   } catch (error) {
-    ElMessage.error(String(error))
+    notifyError(error)
   }
 }
 
@@ -128,6 +198,7 @@ async function handleAutostartChange(value) {
   }
 
   loading.autostart = true
+
   try {
     if (value) {
       await enable()
@@ -135,10 +206,10 @@ async function handleAutostartChange(value) {
       await disable()
     }
     saveAllPreferences()
-    ElMessage.success(value ? "已开启开机自启" : "已关闭开机自启")
+    notifySuccess(value ? t("settings.autostart.enabled") : t("settings.autostart.disabled"))
   } catch (error) {
     form.autostart = !value
-    ElMessage.error(String(error))
+    notifyError(error)
   } finally {
     loading.autostart = false
   }
@@ -149,129 +220,265 @@ async function handleAutostartChange(value) {
 .settings-page {
   display: flex;
   flex-direction: column;
-  gap: 12px;
   height: 100%;
   min-height: 0;
+  padding: 12px;
+  background: transparent;
+  box-sizing: border-box;
 }
 
-.settings-grid {
+.settings-shell {
+  flex: 1;
+  min-height: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  flex: 1;
-  min-height: 0;
-}
-
-.settings-panel {
-  padding: 18px;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-}
-
-.settings-panel--primary {
-  background: linear-gradient(180deg, #ffffff, #f8fbfe);
-}
-
-.settings-panel--dark {
-  background: linear-gradient(180deg, #15233a, #1a2b45);
-  border-color: rgba(109, 136, 184, 0.28);
-  color: #e9f1ff;
-}
-
-.settings-panel--dark .section-eyebrow,
-.settings-panel--dark p,
-.settings-panel--dark h3 {
-  color: inherit;
-}
-
-.panel-head h3,
-.settings-panel h3 {
-  margin: 0 0 8px;
-}
-
-.panel-head p {
-  margin: 0;
-  color: var(--dt-text-secondary);
-}
-
-.panel-body {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-  padding-right: 4px;
-}
-
-.settings-form {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  margin-top: 14px;
-}
-
-.setting-block {
-  padding: 14px;
-  border: 1px solid #dfe7f2;
-  border-radius: var(--dt-radius-subtle);
-  background: #f7fafe;
-}
-
-.setting-block--compact {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
+  grid-template-columns: 320px minmax(0, 1fr);
   gap: 18px;
 }
 
-.setting-block__copy strong {
-  display: block;
-  margin-bottom: 6px;
-  font-size: 14px;
+.settings-aside,
+.settings-main {
+  min-height: 0;
 }
 
-.setting-block__copy p {
+.settings-aside {
+  display: flex;
+}
+
+.settings-main {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.settings-main::-webkit-scrollbar {
+  width: 6px;
+}
+
+.settings-main::-webkit-scrollbar-thumb {
+  background: var(--dt-border-strong);
+  border-radius: 3px;
+}
+
+.settings-eyebrow,
+.settings-panel__eyebrow {
+  display: inline-block;
+  margin-bottom: 10px;
+  color: var(--dt-text-muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.settings-summary,
+.settings-panel {
+  background: var(--dt-gloss-surface);
+  border: 1px solid var(--dt-border);
+  box-shadow: var(--dt-shadow-float);
+}
+
+.settings-summary {
+  position: sticky;
+  top: 0;
+  flex: 1 1 auto;
+}
+
+.settings-summary__head {
+  padding: 22px 22px 20px;
+}
+
+.settings-summary__head h1 {
+  margin: 0 0 10px;
+  font-size: 28px;
+  font-weight: 800;
+  line-height: 1.15;
+  color: var(--dt-text-primary);
+}
+
+.settings-summary__head p,
+.settings-panel__head p,
+.settings-row__copy p {
   margin: 0;
   color: var(--dt-text-secondary);
-  font-size: 13px;
-  line-height: 1.7;
+  font-size: 14px;
+  line-height: 1.6;
 }
 
-.setting-block :deep(.el-form-item) {
-  margin: 14px 0 0;
+.settings-summary__body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px 22px 22px;
 }
 
-.setting-block :deep(.el-form-item__content) {
-  width: 100%;
+.settings-summary__item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 
-.path-field {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 10px;
-  align-items: stretch;
-  width: 100%;
+.settings-summary__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
 }
 
-.path-field :deep(.el-input) {
-  width: 100%;
+.settings-summary__icon--path {
+  color: var(--dt-brand-primary);
+  background: var(--dt-brand-primary-soft);
 }
 
-.path-field :deep(.el-input__wrapper) {
-  width: 100%;
+.settings-summary__icon--startup {
+  color: var(--dt-success);
+  background: var(--dt-status-success-soft);
 }
 
-@media (max-width: 1080px) {
-  .panel-body {
-    overflow: visible;
-    padding-right: 0;
+.settings-summary__icon--update {
+  color: var(--dt-warning);
+  background: var(--dt-status-warning-soft);
+}
+
+.settings-summary__copy span {
+  display: block;
+  color: var(--dt-text-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.settings-summary__copy strong {
+  color: var(--dt-text-primary);
+  font-size: 16px;
+  font-weight: 800;
+}
+
+.settings-panel__head {
+  padding: 18px 20px 16px;
+}
+
+.settings-panel__head h2,
+.settings-row__copy h3 {
+  margin: 0 0 6px;
+  font-size: 20px;
+  font-weight: 800;
+  line-height: 1.2;
+  color: var(--dt-text-primary);
+}
+
+.settings-panel__body {
+  padding: 18px 20px 20px;
+}
+
+.settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.settings-field label {
+  color: var(--dt-text-secondary);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.settings-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 18px 20px;
+}
+
+.settings-row__copy {
+  flex: 1;
+}
+
+.settings-panel :deep(.q-toggle) {
+  flex: 0 0 auto;
+}
+
+.settings-panel :deep(.q-separator) {
+  background: var(--dt-border);
+}
+
+.settings-field :deep(.q-field--outlined .q-field__control) {
+  background: var(--dt-bg-input);
+  border-radius: var(--dt-radius-field);
+  color: var(--dt-text-primary);
+}
+
+.settings-field :deep(.q-field--outlined .q-field__control:before) {
+  border-color: var(--dt-border-strong);
+}
+
+.settings-field :deep(.q-field--outlined .q-field__control:hover:before),
+.settings-field :deep(.q-field--outlined.q-field--focused .q-field__control:before),
+.settings-field :deep(.q-field--outlined.q-field--highlighted .q-field__control:before) {
+  border-color: var(--dt-brand-primary);
+}
+
+.settings-field :deep(.q-field__native),
+.settings-field :deep(.q-field__input),
+.settings-field :deep(.q-field__prefix),
+.settings-field :deep(.q-field__suffix),
+.settings-field :deep(.q-field__prepend),
+.settings-field :deep(.q-field__append) {
+  color: var(--dt-text-primary);
+}
+
+.settings-field :deep(.q-field__label),
+.settings-field :deep(.q-field__marginal),
+.settings-field :deep(.q-placeholder) {
+  color: var(--dt-text-secondary);
+}
+
+.settings-panel :deep(.q-toggle__inner) {
+  color: var(--dt-text-muted);
+}
+
+.settings-panel :deep(.q-toggle__track) {
+  opacity: 1;
+  background: var(--dt-brand-secondary-soft);
+}
+
+.settings-panel :deep(.q-toggle__thumb) {
+  color: var(--dt-bg-panel-strong);
+}
+
+.settings-panel :deep(.q-toggle__inner--truthy) {
+  color: var(--dt-brand-primary);
+}
+
+.settings-panel :deep(.q-toggle__inner--truthy .q-toggle__track) {
+  background: var(--dt-brand-primary-soft);
+}
+
+@media (max-width: 960px) {
+  .settings-page {
+    padding: 12px;
   }
 
-  .setting-block--compact {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .path-field {
+  .settings-shell {
     grid-template-columns: 1fr;
+  }
+
+  .settings-summary {
+    position: static;
+  }
+
+  .settings-panel__head,
+  .settings-panel__body,
+  .settings-row {
+    padding: 16px;
+  }
+
+  .settings-row {
+    flex-direction: column;
+    align-items: stretch;
   }
 }
 </style>

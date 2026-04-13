@@ -1,0 +1,37 @@
+export default {
+  actions: {
+    cancel: "取消",
+    clear: "清空",
+    close: "关闭",
+    confirm: "确认",
+    connect: "连接",
+    disconnect: "断开",
+    export: "导出",
+    import: "导入",
+    refresh: "刷新",
+    save: "保存",
+    selectFile: "选择文件",
+    send: "发送",
+    stop: "停止",
+    viewDetails: "查看详情",
+  },
+  fields: {
+    frameType: "帧类型",
+    port: "端口",
+  },
+  messages: {
+    noSelection: "未选择",
+    processing: "处理中...",
+    unnamedFile: "未命名文件",
+  },
+  status: {
+    connected: "已连接",
+    disconnected: "未连接",
+    failed: "失败",
+    idle: "未开始",
+    loading: "处理中",
+    paused: "暂停",
+    stopped: "已停止",
+    success: "成功",
+  },
+}

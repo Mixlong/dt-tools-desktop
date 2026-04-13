@@ -1,221 +1,924 @@
 <template>
-  <div class="shell">
-    <aside class="sidebar">
-      <div class="sidebar-main">
-        <el-scrollbar class="sidebar-scroll">
-          <div class="sidebar-scroll__content">
-            <div class="sidebar-brand">
-              <img :src="logoImage" alt="DT-Tools logo" class="sidebar-brand__logo" />
-            </div>
-
-            <nav class="nav-list">
-              <section v-for="section in navSections" :key="section.label" class="nav-section">
-                <router-link
-                  v-if="section.to"
-                  :to="section.to"
-                  :class="['nav-section__title', 'nav-section__title--link', { 'nav-section__title--active': route.path === section.to }]"
-                >
-                  <el-icon><component :is="section.icon" /></el-icon>
-                  <span>{{ section.label }}</span>
-                </router-link>
-
-                <div v-else :class="['nav-section__title', { 'nav-section__title--active': isSectionActive(section) }]">
-                  <el-icon><component :is="section.icon" /></el-icon>
-                  <span>{{ section.label }}</span>
-                </div>
-
-                <div v-if="section.items?.length" class="nav-section__items">
-                  <router-link v-for="item in section.items" :key="item.to" :to="item.to" class="nav-subitem">
-                    <span class="nav-subitem__dot" />
-                    <span>{{ item.label }}</span>
-                  </router-link>
-                </div>
-              </section>
-            </nav>
-          </div>
-        </el-scrollbar>
-      </div>
-
-      <div class="sidebar-bottom">
-        <section class="device-dock">
-          <div class="device-card" @click="drawer = true">
-            <div class="device-card__top">
-              <div class="device-icon"><el-icon><Lightning /></el-icon></div>
-              <div class="device-meta">
-                <strong>{{ deviceStore.currentModelLabel }}</strong>
-                <span>{{ deviceStore.onlineStatus }}</span>
+  <q-layout class="app-shell" view="lHh Lpr lFf">
+    <div :class="['shell-header', { 'shell-header--config': isConfigRoute }]">
+      <template v-if="isConfigRoute">
+        <div class="shell-header__config-layout">
+          <div class="shell-header__config-bar">
+            <div
+              class="shell-drag-region shell-drag-region--full"
+              @mousedown.left="handleWindowTitlebarMouseDown"
+              @dblclick.stop="handleWindowTitlebarDoubleClick"
+            />
+            <div
+              class="shell-toolbar__brand shell-toolbar__brand--inline shell-toolbar__brand--config shell-toolbar__brand--drag"
+              @mousedown.left="handleWindowTitlebarMouseDown"
+              @dblclick.stop="handleWindowTitlebarDoubleClick"
+            >
+              <q-icon :name="route.meta?.icon || 'dashboard'" size="22px" class="shell-toolbar__page-icon" />
+              <div class="shell-toolbar__title">
+                <strong :style="{ color: headerTitleColor }">{{ resolvedRouteTitle }}</strong>
               </div>
             </div>
-
-            <div class="device-card__status-row">
-              <span :class="['device-status', { 'device-status--online': deviceStore.connectionStatus === 'CONNECTED' }]">
-                {{ deviceStore.connectionStatus === "CONNECTED" ? "已连接" : "未连接" }}
-              </span>
-              <span class="device-card__endpoint">{{ deviceEndpoint }}</span>
-            </div>
-
-            <div class="device-card__bottom" @click.stop>
-              <el-select v-model="deviceStore.currentModel" class="device-card__select">
-                <el-option
-                  v-for="item in deviceStore.models"
-                  :key="item.value"
-                  :label="item.label"
-                  :value="item.value"
-                />
-              </el-select>
+            <div id="config-toolbar-host" class="shell-header__config-host" />
+            <div class="shell-header__actions">
+              <q-btn
+                v-if="themeToggleEnabled"
+                dense
+                flat
+                round
+                size="14px"
+                class="shell-theme-switch"
+                :icon="themeToggleIcon"
+                @click="handleThemeToggle"
+              >
+                <q-tooltip>{{ themeToggleLabel }}</q-tooltip>
+              </q-btn>
+              <q-btn dense flat round size="14px" class="shell-lang-switch" :disable="languageSwitching">
+                <span class="shell-lang-switch__label">{{ languageSwitchLabel }}</span>
+                <q-menu
+                  anchor="bottom middle"
+                  self="top middle"
+                  :offset="[0, 12]"
+                >
+                  <q-list dense>
+                    <q-item clickable v-close-popup :active="currentLocale === 'zh-CN'" @click="handleLanguageChange('zh-CN')">
+                      <q-item-section>简体中文</q-item-section>
+                    </q-item>
+                    <q-item clickable v-close-popup :active="currentLocale === 'en-US'" @click="handleLanguageChange('en-US')">
+                      <q-item-section>English</q-item-section>
+                    </q-item>
+                  </q-list>
+                </q-menu>
+              </q-btn>
+              <div v-if="windowControlsEnabled" class="shell-window-actions">
+                <q-btn dense flat icon="minimize" class="shell-window-action" @click.stop="handleWindowMinimize" />
+                <q-btn dense flat icon="crop_square" class="shell-window-action" @click.stop="handleWindowToggleMaximize" />
+                <q-btn dense flat icon="close" class="shell-window-action shell-window-action--close" @click.stop="handleWindowClose" />
+              </div>
             </div>
           </div>
-        </section>
+        </div>
+      </template>
+
+      <q-toolbar v-else class="shell-toolbar">
+        <div
+          class="shell-drag-region shell-drag-region--full"
+          @mousedown.left="handleWindowTitlebarMouseDown"
+          @dblclick.stop="handleWindowTitlebarDoubleClick"
+        />
+        <div
+          class="shell-toolbar__brand shell-toolbar__brand--drag"
+          @mousedown.left="handleWindowTitlebarMouseDown"
+          @dblclick.stop="handleWindowTitlebarDoubleClick"
+        >
+          <q-icon :name="route.meta?.icon || 'dashboard'" size="22px" class="shell-toolbar__page-icon" />
+          <div class="shell-toolbar__title">
+            <strong :style="{ color: headerTitleColor }">{{ resolvedRouteTitle }}</strong>
+          </div>
+        </div>
+        <div id="page-toolbar-host" class="shell-toolbar__page-host" />
+        <div class="shell-header__actions">
+          <q-btn
+            v-if="themeToggleEnabled"
+            dense
+            flat
+            round
+            size="14px"
+            class="shell-theme-switch"
+            :icon="themeToggleIcon"
+            @click="handleThemeToggle"
+          >
+            <q-tooltip>{{ themeToggleLabel }}</q-tooltip>
+          </q-btn>
+          <q-btn dense flat round size="14px" class="shell-lang-switch" :disable="languageSwitching">
+            <span class="shell-lang-switch__label">{{ languageSwitchLabel }}</span>
+            <q-menu
+              anchor="bottom middle"
+              self="top middle"
+              :offset="[0, 12]"
+            >
+              <q-list dense>
+                <q-item clickable v-close-popup :active="currentLocale === 'zh-CN'" @click="handleLanguageChange('zh-CN')">
+                  <q-item-section>简体中文</q-item-section>
+                </q-item>
+                <q-item clickable v-close-popup :active="currentLocale === 'en-US'" @click="handleLanguageChange('en-US')">
+                  <q-item-section>English</q-item-section>
+                </q-item>
+              </q-list>
+            </q-menu>
+          </q-btn>
+          <div v-if="windowControlsEnabled" class="shell-window-actions">
+            <q-btn dense flat icon="minimize" class="shell-window-action" @click.stop="handleWindowMinimize" />
+            <q-btn dense flat icon="crop_square" class="shell-window-action" @click.stop="handleWindowToggleMaximize" />
+            <q-btn dense flat icon="close" class="shell-window-action shell-window-action--close" @click.stop="handleWindowClose" />
+          </div>
+        </div>
+      </q-toolbar>
+    </div>
+
+    <aside :class="['shell-sidebar', { 'shell-sidebar--config': isConfigRoute }]">
+      <div class="sidebar-surface">
+        <div class="drawer-shell">
+          <div class="sidebar-brand">
+            <div class="sidebar-brand__mark">
+              <img :src="logoImage" alt="DT-Tools logo" class="sidebar-brand__logo" />
+            </div>
+          </div>
+
+          <div class="sidebar-main">
+            <q-scroll-area class="sidebar-scroll">
+              <div class="sidebar-scroll__content">
+                <q-list class="nav-list">
+                  <q-btn
+                    v-for="item in primaryNavSections"
+                    :key="item.to"
+                    :to="item.to"
+                    :icon="item.icon"
+                    :label="t(item.labelKey)"
+                    :color="isNavActive(item) ? 'primary' : undefined"
+                    :text-color="isNavActive(item) ? 'white' : undefined"
+                    :flat="!isNavActive(item)"
+                    :push="isNavActive(item)"
+                    :glossy="isNavActive(item)"
+                    no-caps
+                    align="left"
+                    :class="['nav-home', 'nav-home--single', { 'nav-home--active': isNavActive(item) }]"
+                  />
+                </q-list>
+              </div>
+            </q-scroll-area>
+          </div>
+
+          <div class="sidebar-bottom">
+            <section class="device-dock">
+              <section class="device-connect-panel">
+                <div class="device-connect-panel__head">
+                  <div>
+                    <h3>{{ t("layout.device.title") }}</h3>
+                  </div>
+                  <q-btn
+                    to="/settings"
+                    flat
+                    round
+                    dense
+                    unelevated
+                    :class="['device-dock__settings', { 'device-dock__settings--active': route.path === '/settings' }]"
+                  >
+                    <q-icon name="settings" size="18px" />
+                  </q-btn>
+                </div>
+
+                <div class="device-connect-panel__body">
+                  <div class="drawer-form">
+                    <div class="drawer-field">
+                      <label>{{ t("layout.device.manualModel") }}</label>
+                      <q-input
+                        v-model="manualModelInput"
+                        outlined
+                        dense
+                        clearable
+                        :placeholder="t('layout.device.manualModelPlaceholder')"
+                        @update:model-value="handleManualModelInputChange"
+                        @keyup.enter="handleManualModelSubmit"
+                      />
+                    </div>
+
+                    <div class="drawer-field">
+                      <label>{{ t("layout.device.cqCode") }}</label>
+                      <q-input
+                        v-model="panelCqCode"
+                        outlined
+                        dense
+                        clearable
+                        :placeholder="t('layout.device.cqCodePlaceholder')"
+                        @update:model-value="handlePanelCqCodeChange"
+                      />
+                    </div>
+
+                    <div class="drawer-field">
+                      <label>{{ t("layout.device.port") }}</label>
+                      <q-select
+                        v-model="deviceStore.port"
+                        :options="deviceStore.ports"
+                        emit-value
+                        map-options
+                        outlined
+                        dense
+                        option-label="label"
+                        option-value="value"
+                      />
+                    </div>
+
+                  </div>
+                </div>
+
+                <div class="device-connect-panel__actions">
+                  <q-btn class="device-connect-panel__action-secondary" color="white" text-color="black" :label="t('layout.device.refreshPorts')" @click="refreshPorts" />
+                  <q-btn
+                    class="device-connect-panel__action-primary"
+                    color="primary"
+                    push
+                    :loading="connecting"
+                    :label="deviceStore.connectionStatus === 'CONNECTED' ? t('layout.device.disconnectDevice') : t('layout.device.connectDevice')"
+                    @click="toggleConnection"
+                  />
+                </div>
+              </section>
+            </section>
+          </div>
+        </div>
       </div>
     </aside>
 
-    <main class="main">
-      <section :class="['content', { 'content--home': route.path === '/home' }]">
-        <router-view />
-      </section>
-    </main>
+    <q-page-container class="shell-frame">
+      <div class="shell-frame-shadow" aria-hidden="true" />
+      <q-page class="shell-page" :style-fn="getShellPageStyle">
+        <section
+          :class="[
+            'shell-page-container',
+            { 'shell-page-container--full': isConfigRoute },
+          ]"
+        >
+          <section
+            :class="[
+              'content',
+              {
+                'content--home': route.path === '/home',
+                'content--config': isConfigRoute,
+                'content--settings': isSettingsRoute,
+              },
+            ]"
+          >
+            <router-view v-slot="{ Component, route: currentRoute }">
+              <keep-alive>
+                <component
+                  :is="Component"
+                  v-if="currentRoute.meta?.keepAlive !== false"
+                  :key="currentRoute.name || currentRoute.path"
+                />
+              </keep-alive>
+              <component
+                :is="Component"
+                v-if="currentRoute.meta?.keepAlive === false"
+                :key="currentRoute.fullPath"
+              />
+            </router-view>
+          </section>
+        </section>
+      </q-page>
+    </q-page-container>
 
-    <el-drawer v-model="drawer" title="适配器连接" size="420px">
-        <div class="drawer-form">
-          <el-form label-position="top">
-          <el-form-item label="通信模式">
-            <el-segmented v-model="deviceStore.transport" :options="transportOptions" />
-          </el-form-item>
-          <el-form-item label="端口">
-            <el-select v-model="deviceStore.port" filterable>
-              <el-option v-for="item in deviceStore.ports" :key="item.value" :label="item.label" :value="item.value" />
-            </el-select>
-          </el-form-item>
-          <el-form-item label="适配器串口波特率">
-            <el-input :model-value="String(deviceStore.baudRate)" disabled />
-            <div class="drawer-help">电脑连接 UniMaster 适配器的串口速率固定为 115200，和页面里的仪表 UART 波特率不是一回事。</div>
-          </el-form-item>
-          <el-form-item v-if="deviceStore.transport === 'can'" label="CAN 波特率">
-            <el-select v-model="deviceStore.canBitrate">
-              <el-option v-for="item in canRates" :key="item" :label="`${item} kbps`" :value="item" />
-            </el-select>
-          </el-form-item>
-          <el-form-item v-if="deviceStore.transport === 'can'" label="帧类型">
-            <el-segmented v-model="deviceStore.frameType" :options="frameTypeOptions" />
-          </el-form-item>
-        </el-form>
-        <div class="drawer-actions">
-          <el-button @click="refreshPorts">刷新端口</el-button>
-          <el-button type="primary" :loading="connecting" @click="toggleConnection">
-          {{ deviceStore.connectionStatus === "CONNECTED" ? "断开连接" : "连接设备" }}
-          </el-button>
-        </div>
-      </div>
-    </el-drawer>
-  </div>
+  </q-layout>
+
+  <q-dialog v-model="cqPasswordDialogOpen" persistent no-shake>
+    <q-card class="cq-dialog">
+      <q-card-section class="cq-dialog__section">
+        <div class="cq-dialog__title">升级配置入口</div>
+        <div class="cq-dialog__desc">输入密码后可打开 CQ 配置生成器。</div>
+      </q-card-section>
+      <q-card-section class="cq-dialog__section cq-dialog__section--compact">
+        <q-input
+          v-model="cqPasswordInput"
+          outlined
+          dense
+          autofocus
+          type="password"
+          label="访问密码"
+          @keyup.enter="submitCqPassword"
+        />
+      </q-card-section>
+      <q-card-actions align="right" class="cq-dialog__actions">
+        <q-btn flat label="取消" @click="closeCqPasswordDialog" />
+        <q-btn unelevated color="primary" label="确认" @click="submitCqPassword" />
+      </q-card-actions>
+    </q-card>
+  </q-dialog>
+
+  <q-dialog v-model="cqGeneratorDialogOpen" persistent no-shake>
+    <q-card class="cq-dialog cq-dialog--generator">
+      <q-card-section class="cq-dialog__section">
+        <div class="cq-dialog__title">CQ 配置生成器</div>
+      </q-card-section>
+      <q-card-section class="cq-dialog__section cq-dialog__section--compact">
+        <q-btn-toggle
+          v-model="cqTransportMode"
+          spread
+          no-caps
+          push
+          glossy
+          toggle-color="primary"
+          color="white"
+          text-color="grey-7"
+          class="cq-dialog__transport-tabs"
+          :options="cqTransportOptions"
+        />
+      </q-card-section>
+      <q-card-section class="cq-dialog__section cq-dialog__grid">
+        <q-select v-model="cqGeneratorForm.burnFileType" :options="cqBurnFileTypeOptions" emit-value map-options outlined dense label="目标文件类型" />
+        <q-select
+          v-if="cqTransportMode === 'uart'"
+          v-model="cqGeneratorForm.commType"
+          :options="cqUartCommTypeOptions"
+          emit-value
+          map-options
+          outlined
+          dense
+          label="UART 电平"
+        />
+        <q-input
+          v-else
+          :model-value="'CAN'"
+          outlined
+          dense
+          readonly
+          label="通讯类型"
+        />
+        <q-select v-model="cqGeneratorForm.baudCode" :options="cqBaudOptions" emit-value map-options outlined dense label="波特率编码" />
+        <q-select v-model="cqGeneratorForm.frameType" :options="cqFrameTypeOptions" emit-value map-options outlined dense label="帧类型" :disable="cqGeneratorForm.commType !== 0x02" />
+        <q-select v-model="cqGeneratorForm.powerVoltage" :options="cqPowerVoltageOptions" emit-value map-options outlined dense label="供电电压" />
+        <q-select v-model="cqGeneratorForm.vlk5vEnabled" :options="cqVlk5vOptions" emit-value map-options outlined dense label="VLK5V 开关" />
+        <q-select v-model="cqGeneratorForm.protocolType" :options="cqProtocolTypeOptions" emit-value map-options outlined dense label="升级协议类型" />
+        <q-select v-model="cqGeneratorForm.frameId" :options="cqFrameIdOptions" emit-value map-options outlined dense label="帧ID" :disable="cqGeneratorForm.commType !== 0x02" />
+        <q-input
+          v-if="Number(cqGeneratorForm.frameId) === 0x02"
+          v-model="cqGeneratorForm.specialFrameValue"
+          outlined
+          dense
+          label="特殊帧ID"
+          class="cq-dialog__field--full"
+        />
+      </q-card-section>
+      <q-card-section class="cq-dialog__section cq-dialog__section--compact">
+        <q-input :model-value="cqGeneratorPreview" outlined dense readonly label="CQ 配置串">
+          <template #append>
+            <q-btn flat round dense icon="content_copy" @click="copyCqCode" />
+          </template>
+        </q-input>
+      </q-card-section>
+      <q-card-actions align="right" class="cq-dialog__actions">
+        <q-btn flat label="关闭" @click="cqGeneratorDialogOpen = false" />
+      </q-card-actions>
+    </q-card>
+  </q-dialog>
 </template>
 
 <script setup>
-import { ElMessage } from "element-plus"
+import { computed, nextTick, onMounted, onUnmounted, provide, reactive, ref, watch } from "vue"
 import { useRoute } from "vue-router"
+import { useQuasar } from "quasar"
+import { useI18n } from "vue-i18n"
+import { getCurrentWindow } from "@tauri-apps/api/window"
+import { frontendLog, switchLanguage } from "@/api/unimaster"
+import { navSections } from "@/config/navigation"
+import { applyLocale, getCurrentLocale, getDeviceLanguageCode, getLocaleSwitchLabel, getTargetLocale } from "@/i18n"
+import { notifyError, notifyInfo, notifySuccess } from "@/services/ui"
 import { useDeviceStore } from "@/store/device"
-import logoImage from "@/assect/images/logo.png"
+import { saveThemeMode } from "@/utils/preferences"
+import { applyThemeMode } from "@/utils/theme"
+import {
+  UPGRADE_CAN_BAUD_OPTIONS,
+  UPGRADE_CQ_PASSWORD,
+  UPGRADE_POWER_VOLTAGE_OPTIONS,
+  UPGRADE_PROTOCOL_TYPE_OPTIONS,
+  UPGRADE_UART_BAUD_OPTIONS,
+  UPGRADE_UART_COMM_TYPE_OPTIONS,
+  UPGRADE_VLK5V_OPTIONS,
+  buildUpgradeCqCode,
+  createDefaultUpgradeCqState,
+  getUpgradeBaudOptions,
+  parseUpgradeCqCode,
+  getUpgradeFrameIdOptions,
+  getUpgradeFrameTypeOptions,
+} from "@/utils/upgrade-cq"
+import darkLogoImage from "@/assect/images/logo.svg"
+import lightLogoImage from "@/assect/images/log2.svg"
 
 const route = useRoute()
+const $q = useQuasar()
+const { t, locale } = useI18n()
 const deviceStore = useDeviceStore()
-const drawer = ref(false)
+const appWindow = typeof window !== "undefined" && window.__TAURI_INTERNALS__ ? getCurrentWindow() : null
+const themeToggleEnabled = computed(() => !(typeof document !== "undefined" && document.documentElement.classList.contains("mac-theme-locked")))
 const connecting = ref(false)
-
-const navSections = [
-  {
-    label: "首页",
-    icon: "House",
-    to: "/home",
+const languageSwitching = ref(false)
+const hotplugDialogOpen = ref(false)
+const languageSwitchLabel = computed(() => getLocaleSwitchLabel(locale.value))
+const currentLocale = computed(() => locale.value)
+const windowControlsEnabled = computed(() => Boolean(appWindow))
+const currentThemeMode = computed(() => ($q.dark.isActive ? "dark" : "light"))
+const headerTitleColor = computed(() => (currentThemeMode.value === "dark" ? "#ffffff" : "#17355e"))
+const logoImage = computed(() => ($q.dark.isActive ? darkLogoImage : lightLogoImage))
+const themeToggleIcon = computed(() => (currentThemeMode.value === "dark" ? "light_mode" : "dark_mode"))
+const themeToggleLabel = computed(() => (currentThemeMode.value === "dark" ? "浅色模式" : "深色模式"))
+const resolvedRouteTitle = computed(() => {
+  if (route.meta?.titleKey) {
+    return t(route.meta.titleKey)
+  }
+  return t("nav.workspace")
+})
+const currentWindowTitle = computed(() => resolvedRouteTitle.value || "DT-Tools")
+let unlistenPortWatcher = null
+let startupHotplugPromptTimer = null
+let hiddenEntryTimer = null
+const isConfigRoute = computed(() => route.path === "/config")
+const isSettingsRoute = computed(() => route.path === "/settings")
+const primaryNavSections = computed(() => (
+  navSections.filter((item) => ["/home", "/config", "/software"].includes(item.to))
+))
+const manualModelInput = ref("")
+const panelCqCode = computed({
+  get: () => deviceStore.upgradeCqCode,
+  set: (value) => {
+    deviceStore.setUpgradeCqCode(value)
   },
-  {
-    label: "工具",
-    icon: "Tools",
-    items: [
-      { to: "/tools/wiring", label: "接线指引" },
-      { to: "/tools/serial", label: "串口抓包" },
-      { to: "/tools/can", label: "CAN 数据抓包" },
-    ],
-  },
-  {
-    label: "软件",
-    icon: "Upload",
-    items: [{ to: "/software", label: "固件升级" }],
-  },
-  {
-    label: "设置",
-    icon: "Setting",
-    items: [
-      { to: "/config", label: "仪表参数" },
-      { to: "/settings", label: "系统设置" },
-    ],
-  },
-  {
-    label: "支持",
-    icon: "QuestionFilled",
-    items: [{ to: "/support", label: "使用说明" }],
-  },
+})
+const hiddenEntryClicks = ref(0)
+const cqPasswordDialogOpen = ref(false)
+const cqPasswordInput = ref("")
+const cqGeneratorDialogOpen = ref(false)
+const cqGeneratorForm = reactive({
+  burnFileType: 1,
+  ...createDefaultUpgradeCqState(),
+})
+const cqBurnFileTypeOptions = [
+  { label: "APP", value: 1 },
+  { label: "UI", value: 2 },
 ]
-
-const transportOptions = [
+const cqTransportOptions = [
   { label: "UART", value: "uart" },
   { label: "CAN", value: "can" },
 ]
-const frameTypeOptions = [
-  { label: "标准帧", value: "standard" },
-  { label: "扩展帧", value: "extended" },
-]
-const canRates = [125, 250, 500, 1000]
-const deviceEndpoint = computed(() => {
-  if (deviceStore.connectionStatus === "CONNECTED" && deviceStore.port) {
-    return deviceStore.port
+const cqTransportMode = computed({
+  get: () => (Number(cqGeneratorForm.commType) === 0x02 ? "can" : "uart"),
+  set: (value) => {
+    if (value === "can") {
+      cqGeneratorForm.commType = 0x02
+      if (!UPGRADE_CAN_BAUD_OPTIONS.some((item) => item.value === Number(cqGeneratorForm.baudCode))) {
+        cqGeneratorForm.baudCode = 0x08
+      }
+      return
+    }
+
+    if (Number(cqGeneratorForm.commType) === 0x02) {
+      cqGeneratorForm.commType = 0x00
+    }
+    if (!UPGRADE_UART_BAUD_OPTIONS.some((item) => item.value === Number(cqGeneratorForm.baudCode))) {
+      cqGeneratorForm.baudCode = 0x0B
+    }
+  },
+})
+const cqUartCommTypeOptions = UPGRADE_UART_COMM_TYPE_OPTIONS
+const cqBaudOptions = computed(() => getUpgradeBaudOptions(cqGeneratorForm.commType))
+const cqPowerVoltageOptions = UPGRADE_POWER_VOLTAGE_OPTIONS
+const cqVlk5vOptions = UPGRADE_VLK5V_OPTIONS
+const cqProtocolTypeOptions = UPGRADE_PROTOCOL_TYPE_OPTIONS
+const cqFrameTypeOptions = computed(() => getUpgradeFrameTypeOptions(cqGeneratorForm.commType))
+const cqFrameIdOptions = computed(() => getUpgradeFrameIdOptions(cqGeneratorForm.commType))
+const cqGeneratorPreview = computed(() => {
+  try {
+    return buildUpgradeCqCode(cqGeneratorForm, cqGeneratorForm.burnFileType)
+  } catch {
+    return ""
   }
-  return deviceStore.transport === "can" ? "CAN 模式" : "等待选择端口"
 })
 
-function isSectionActive(section) {
-  return section.items.some((item) => item.to === route.path)
+function getPerfNow() {
+  return typeof performance !== "undefined" ? performance.now() : Date.now()
+}
+
+function getShellPageStyle() {
+  return {
+    minHeight: "0px",
+    height: "100%",
+  }
+}
+
+function logStartupPerf(stage, details = {}) {
+  const serializedDetails = Object.entries(details)
+    .map(([key, value]) => `${key}=${value}`)
+    .join(" ")
+
+  const message = `[perf][startup][${stage}]${serializedDetails ? ` ${serializedDetails}` : ""}`
+  console.info(message)
+  frontendLog("info", message).catch(() => {})
+}
+
+function applyParsedCqToDevice(parsedCq) {
+  const isCan = Number(parsedCq.commType) === 0x02
+  const nextCommType = isCan ? 0x02 : 0x01
+  const nextBaudCode = Number(parsedCq.baudCode)
+  const nextFrameType = isCan ? Number(parsedCq.frameType || 0x01) : 0
+
+  deviceStore.setMeterCommType(nextCommType)
+  deviceStore.setMeterBaudCode(nextBaudCode)
+  if (isCan) {
+    deviceStore.setMeterFrameType(nextFrameType)
+  }
+}
+
+function syncDeviceConfigWithCqCode(input, options = {}) {
+  const { notifyOnError = false } = options
+  const normalized = String(input || "").trim().toUpperCase()
+
+  deviceStore.setUpgradeCqCode(normalized)
+  if (!normalized) {
+    return false
+  }
+
+  try {
+    const parsedCq = parseUpgradeCqCode(normalized)
+    applyParsedCqToDevice(parsedCq)
+    return true
+  } catch (error) {
+    if (notifyOnError) {
+      notifyError(error)
+    }
+    return false
+  }
+}
+
+function handlePanelCqCodeChange(value) {
+  syncDeviceConfigWithCqCode(value)
+}
+
+function handleManualModelInputChange(value) {
+  const normalized = String(value || "")
+  manualModelInput.value = normalized
+
+  if (String(deviceStore.upgradeCqCode || "").trim()) {
+    deviceStore.setUpgradeCqCode("")
+    deviceStore.resetMeterLink()
+  }
+}
+
+function handleManualModelSubmit() {
+  const normalized = String(manualModelInput.value || "").trim()
+  manualModelInput.value = normalized
+
+  if (!normalized) {
+    notifyError(t("layout.device.manualModelRequired"))
+    return
+  }
+
+  deviceStore.setModel(normalized)
+  notifyInfo(t("layout.device.manualModelReadPending", { model: normalized }))
+}
+
+function resetHiddenEntryCounter() {
+  hiddenEntryClicks.value = 0
+  if (hiddenEntryTimer) {
+    window.clearTimeout(hiddenEntryTimer)
+    hiddenEntryTimer = null
+  }
+}
+
+function handleHiddenEntryClick() {
+  hiddenEntryClicks.value += 1
+  if (hiddenEntryTimer) {
+    window.clearTimeout(hiddenEntryTimer)
+  }
+
+  hiddenEntryTimer = window.setTimeout(() => {
+    resetHiddenEntryCounter()
+  }, 1500)
+
+  if (hiddenEntryClicks.value < 5) {
+    return
+  }
+
+  resetHiddenEntryCounter()
+  cqPasswordInput.value = ""
+  cqPasswordDialogOpen.value = true
+}
+
+function handleGlobalHiddenEntryClick(event) {
+  if (cqPasswordDialogOpen.value || cqGeneratorDialogOpen.value) {
+    resetHiddenEntryCounter()
+    return
+  }
+
+  if (event?.button !== 2) {
+    resetHiddenEntryCounter()
+    return
+  }
+
+  handleHiddenEntryClick()
+}
+
+function closeCqPasswordDialog() {
+  cqPasswordDialogOpen.value = false
+  cqPasswordInput.value = ""
+}
+
+function syncCqGeneratorWithDevice() {
+  if (deviceStore.meterCommType === 0x02) {
+    cqGeneratorForm.commType = 0x02
+    cqGeneratorForm.baudCode = Number(deviceStore.meterBaudCode ?? 0x08)
+    cqGeneratorForm.frameType = Number(deviceStore.meterFrameType ?? 0x01) || 0x01
+    cqGeneratorForm.frameId = cqGeneratorForm.frameId === 0x02 ? 0x02 : 0x01
+    return
+  }
+
+  cqGeneratorForm.commType = 0x00
+  cqGeneratorForm.baudCode = Number(deviceStore.meterBaudCode ?? 0x0B)
+  cqGeneratorForm.frameType = 0x00
+  cqGeneratorForm.frameId = 0x00
+  cqGeneratorForm.specialFrameValue = ""
+}
+
+function submitCqPassword() {
+  if (cqPasswordInput.value !== UPGRADE_CQ_PASSWORD) {
+    notifyError("密码错误")
+    cqPasswordInput.value = ""
+    return
+  }
+
+  closeCqPasswordDialog()
+  syncCqGeneratorWithDevice()
+  cqGeneratorDialogOpen.value = true
+}
+
+async function copyCqCode() {
+  if (!cqGeneratorPreview.value) {
+    notifyError("CQ 配置串生成失败")
+    return
+  }
+
+  try {
+    await navigator.clipboard.writeText(cqGeneratorPreview.value)
+    notifySuccess("CQ 配置串已复制")
+  } catch (error) {
+    notifyError(error)
+  }
+}
+
+function openAdapterDialog() {
+  refreshPorts()
+}
+
+provide("openAdapterDialog", openAdapterDialog)
+
+function isNavActive(item) {
+  if (item.to === "/tools") {
+    return route.path === "/tools" || route.path.startsWith("/tools/")
+  }
+  return route.path === item.to
+}
+
+async function handleWindowMinimize() {
+  if (!appWindow) return
+
+  await appWindow.minimize()
+}
+
+async function handleWindowToggleMaximize() {
+  if (!appWindow) return
+
+  await appWindow.toggleMaximize()
+  await syncWindowState()
+}
+
+async function handleWindowTitlebarMouseDown(event) {
+  if (!windowControlsEnabled.value || !appWindow) return
+  if (event.detail > 1) return
+
+  await appWindow.startDragging()
+}
+
+async function handleWindowTitlebarDoubleClick() {
+  if (!windowControlsEnabled.value) return
+
+  await handleWindowToggleMaximize()
+}
+
+async function handleWindowClose() {
+  if (!appWindow) return
+
+  await appWindow.close()
+}
+
+function handleThemeToggle() {
+  if (!themeToggleEnabled.value) {
+    return
+  }
+  const nextThemeMode = currentThemeMode.value === "dark" ? "light" : "dark"
+  const appliedThemeMode = applyThemeMode(nextThemeMode, $q.dark)
+  saveThemeMode(appliedThemeMode)
+}
+
+async function handleLanguageChange(targetLocale) {
+  if (languageSwitching.value) {
+    return
+  }
+
+  const nextLocale = targetLocale || getTargetLocale(getCurrentLocale())
+  if (nextLocale === getCurrentLocale()) {
+    return
+  }
+
+  languageSwitching.value = true
+
+  try {
+    await applyLocale(nextLocale)
+    const result = await switchLanguage(getDeviceLanguageCode(nextLocale))
+    if (result?.success) {
+      notifySuccess(result.message)
+    } else {
+      notifyInfo(result?.message || t("layout.language.notApplied"))
+    }
+  } catch (error) {
+    notifyError(error)
+  } finally {
+    languageSwitching.value = false
+  }
 }
 
 onMounted(async () => {
+  document.body.addEventListener("mousedown", handleGlobalHiddenEntryClick)
+  const startupStartedAt = getPerfNow()
+  logStartupPerf("mount-start", { route: route.path })
+
   try {
-    await deviceStore.refreshPorts()
-    await deviceStore.syncStatus()
+    const portsTaskStartedAt = getPerfNow()
+    const refreshPortsTask = deviceStore.refreshPorts().then((ports) => {
+      logStartupPerf("refresh-ports-ok", {
+        elapsedMs: Math.round(getPerfNow() - portsTaskStartedAt),
+        count: ports.length,
+      })
+      return ports
+    })
+    const syncStatusTask = deviceStore.syncStatus().then((status) => {
+      logStartupPerf("sync-status-ok", {
+        elapsedMs: Math.round(getPerfNow() - portsTaskStartedAt),
+        connected: status.connected,
+        port: status.portName || "",
+      })
+      return status
+    })
+
+    await Promise.all([refreshPortsTask, syncStatusTask])
+    logStartupPerf("device-ready", {
+      totalMs: Math.round(getPerfNow() - startupStartedAt),
+      portCount: deviceStore.ports.length,
+      connected: deviceStore.connectionStatus,
+    })
+
+    if (typeof window !== "undefined" && window.__TAURI_INTERNALS__) {
+      const watcherStartedAt = getPerfNow()
+      unlistenPortWatcher = await deviceStore.startPortWatcher()
+      logStartupPerf("watcher-ready", {
+        elapsedMs: Math.round(getPerfNow() - watcherStartedAt),
+      })
+    }
+
+    await nextTick()
+    logStartupPerf("post-next-tick", {
+      totalMs: Math.round(getPerfNow() - startupStartedAt),
+    })
+    startupHotplugPromptTimer = window.setTimeout(() => {
+      startupHotplugPromptTimer = null
+      logStartupPerf("queue-hotplug-prompt", {
+        totalMs: Math.round(getPerfNow() - startupStartedAt),
+        pendingPort: deviceStore.port || deviceStore.ports[0]?.value || "",
+      })
+      deviceStore.queueStartupHotplugPrompt()
+    }, 180)
   } catch (error) {
-    ElMessage.error(String(error))
+    logStartupPerf("mount-fail", {
+      totalMs: Math.round(getPerfNow() - startupStartedAt),
+      error: String(error),
+    })
+    notifyError(error)
   }
 })
 
 watch(
-  drawer,
-  async (opened) => {
-    if (!opened) {
+  () => cqGeneratorForm.commType,
+  (value) => {
+    if (Number(value) !== 0x02) {
+      cqGeneratorForm.frameType = 0x00
+      cqGeneratorForm.frameId = 0x00
+      cqGeneratorForm.specialFrameValue = ""
       return
     }
 
-    try {
-      await deviceStore.refreshPorts()
-    } catch (error) {
-      ElMessage.error(String(error))
+    if (![0x01, 0x02].includes(Number(cqGeneratorForm.frameType))) {
+      cqGeneratorForm.frameType = 0x01
+    }
+    if (![0x01, 0x02].includes(Number(cqGeneratorForm.frameId))) {
+      cqGeneratorForm.frameId = 0x01
     }
   },
+  { immediate: true },
+)
+
+watch(
+  () => cqGeneratorForm.frameId,
+  (value) => {
+    if (Number(value) !== 0x02) {
+      cqGeneratorForm.specialFrameValue = ""
+    }
+  },
+)
+
+onUnmounted(() => {
+  document.body.removeEventListener("mousedown", handleGlobalHiddenEntryClick)
+  resetHiddenEntryCounter()
+
+  if (startupHotplugPromptTimer) {
+    window.clearTimeout(startupHotplugPromptTimer)
+    startupHotplugPromptTimer = null
+  }
+
+  if (unlistenPortWatcher) {
+    unlistenPortWatcher()
+    unlistenPortWatcher = null
+  }
+})
+
+watch(
+  () => deviceStore.pendingHotplugPort,
+  (port) => {
+    if (!port || hotplugDialogOpen.value) return
+    if (deviceStore.upgradeInProgress) {
+      deviceStore.clearHotplugPending()
+      return
+    }
+
+    logStartupPerf("hotplug-dialog-open", { port })
+    hotplugDialogOpen.value = true
+    $q.dialog({
+      title: t("layout.dialog.hotplugTitle"),
+      message: t("layout.dialog.hotplugMessage", { port }),
+      cancel: {
+        label: t("layout.dialog.hotplugLater"),
+        flat: true,
+      },
+      ok: {
+        label: t("layout.dialog.hotplugNow"),
+        color: "primary",
+        unelevated: true,
+      },
+      persistent: false,
+    })
+      .onOk(async () => {
+        logStartupPerf("hotplug-dialog-ok", { port })
+        hotplugDialogOpen.value = false
+        deviceStore.clearHotplugPending()
+
+        try {
+          if (port) {
+            deviceStore.port = port
+          }
+          logStartupPerf("hotplug-connect-start", { port })
+          await deviceStore.toggleConnection("hotplug-dialog")
+          logStartupPerf("hotplug-connect-ok", { port })
+        } catch (error) {
+          logStartupPerf("hotplug-connect-fail", { port, error: String(error) })
+          notifyError(error)
+        }
+      })
+      .onDismiss(() => {
+        logStartupPerf("hotplug-dialog-dismiss", { port })
+        hotplugDialogOpen.value = false
+        deviceStore.clearHotplugPending()
+      })
+  }
 )
 
 async function refreshPorts() {
   try {
     await deviceStore.refreshPorts()
-    ElMessage.success("端口列表已刷新")
+    notifySuccess(t("layout.device.portsRefreshed"))
   } catch (error) {
-    ElMessage.error(String(error))
+    notifyError(error)
   }
 }
 
 async function toggleConnection() {
+  if (deviceStore.upgradeInProgress) {
+    notifyInfo("升级进行中，暂不允许切换串口连接")
+    return
+  }
+
+  const shouldConnect = deviceStore.connectionStatus !== "CONNECTED"
+  if (shouldConnect) {
+    if (!panelCqCode.value) {
+      notifyError("请先输入 CQ 配置串")
+      return
+    }
+
+    if (!syncDeviceConfigWithCqCode(panelCqCode.value, { notifyOnError: true })) {
+      return
+    }
+  }
+
   connecting.value = true
   try {
-    const status = await deviceStore.toggleConnection()
-    ElMessage.success(status.connected ? "串口已连接" : "串口已断开")
+    const status = await deviceStore.toggleConnection("device-panel-button")
+    notifySuccess(status.connected ? t("layout.device.serialConnected") : t("layout.device.serialDisconnected"))
   } catch (error) {
-    ElMessage.error(String(error))
+    notifyError(error)
   } finally {
     connecting.value = false
   }
@@ -223,186 +926,269 @@ async function toggleConnection() {
 </script>
 
 <style scoped lang="scss">
-.shell {
-  display: grid;
-  grid-template-columns: 320px 1fr;
+.app-shell {
+  --shell-sidebar-width: 272px;
+  --shell-header-height: 64px;
+  --shell-header-surface: var(--dt-header-surface);
+  --shell-divider-color: color-mix(in srgb, var(--dt-border-strong) 78%, transparent);
+  --shell-gloss-surface: var(--dt-gloss-surface);
+  --shell-gloss-surface-soft: var(--dt-gloss-surface-soft);
+  --shell-gloss-surface-ghost: var(--dt-gloss-surface-ghost);
+  --shell-gloss-active: var(--dt-gloss-active);
+  --shell-gloss-border: var(--dt-gloss-border);
+  --shell-gloss-border-strong: var(--dt-gloss-border-strong);
+  --shell-gloss-shadow: var(--dt-gloss-shadow);
+  --shell-gloss-shadow-soft: var(--dt-gloss-shadow-soft);
+  --shell-gloss-shadow-strong: var(--dt-gloss-shadow-strong);
+  --shell-gloss-inset: var(--dt-gloss-inset);
+  --shell-gloss-blue-inset: var(--dt-gloss-blue-inset);
+  position: relative;
   width: 100%;
-  height: 100vh;
-  gap: 0;
-  background: linear-gradient(180deg, #0c1119, #0f1722);
+  height: 100%;
+  background: transparent;
+  color: var(--dt-text-primary);
+  border: 0;
+  border-radius: var(--dt-radius-window);
+  box-shadow:
+    0 18px 40px color-mix(in srgb, var(--dt-shadow-window) 100%, transparent),
+    0 6px 18px rgba(15, 23, 42, 0.08);
   overflow: hidden;
+  clip-path: none;
+  transform: none;
+  isolation: isolate;
 }
 
-.sidebar {
+.app-shell::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgba(199, 211, 228, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(199, 211, 228, 0.02) 1px, transparent 1px);
+  background-position: 0 0, 0 0;
+  background-size: 44px 44px, 44px 44px;
+  mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.36), transparent 86%);
+  opacity: 0.06;
+  z-index: 0;
+}
+
+.app-shell::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at top left, color-mix(in srgb, var(--dt-text-contrast) 18%, transparent), transparent 20%),
+    linear-gradient(180deg, color-mix(in srgb, var(--dt-text-contrast) 10%, transparent), transparent 14%);
+  z-index: 0;
+}
+
+.shell-sidebar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  background: transparent;
+  color: var(--dt-text-primary);
+  width: var(--shell-sidebar-width);
+  min-width: var(--shell-sidebar-width);
+  height: 100%;
+  box-sizing: border-box;
+  border-right: 1px solid transparent;
+  overflow: hidden;
+  z-index: 20;
+}
+
+.sidebar-surface {
+  position: relative;
   display: flex;
   flex-direction: column;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(246, 248, 251, 0.98)),
-    linear-gradient(135deg, rgba(22, 119, 255, 0.05), rgba(22, 119, 255, 0));
-  border-right: 1px solid #d9e1ec;
-  padding: 24px 20px 20px;
-  min-height: 0;
+  height: 100%;
+  background: var(--dt-bg-sidebar);
   overflow: hidden;
-  overflow-x: hidden;
+  box-shadow: none;
+  z-index: 2;
 }
 
-.sidebar-scroll {
-  flex: 1;
-  min-height: 0;
+.sidebar-surface::after {
+  content: "";
+  position: absolute;
+  top: calc(var(--shell-header-height) + 10px);
+  right: -1px;
+  bottom: 18px;
+  width: 1px;
+  pointer-events: none;
+  background: var(--shell-divider-color);
+  z-index: 5;
+}
+
+.drawer-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 16px 14px;
+  border-right: 0;
+  background: var(--dt-bg-sidebar);
+  box-shadow: none;
 }
 
 .sidebar-main {
-  display: flex;
   flex: 1;
   min-height: 0;
-  flex-direction: column;
+  background: var(--dt-bg-sidebar);
+  overflow: hidden;
+}
+
+.sidebar-scroll {
+  height: 100%;
+  background: var(--dt-bg-sidebar);
 }
 
 .sidebar-scroll__content {
-  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 8px;
+  padding-right: 4px;
+  background: var(--dt-bg-sidebar);
 }
 
 .sidebar-brand {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
-  min-height: 54px;
-  padding: 2px 2px 12px;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 52px;
+  padding: 12px 8px 10px;
+  border-bottom: 0;
+  position: relative;
+  z-index: 6;
+}
+
+.sidebar-brand__mark {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  min-width: 0;
+  position: relative;
+  z-index: 1;
 }
 
 .sidebar-brand__logo {
   display: block;
   width: 132px;
   height: auto;
-  object-fit: contain;
+  max-width: 100%;
+  opacity: 1;
+  visibility: visible;
+  flex: 0 0 auto;
 }
 
-.device-card {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  padding: 16px 18px;
-  border-radius: var(--dt-radius-panel);
-  background: linear-gradient(180deg, #ffffff, #f8fbff);
-  border: 1px solid #dbe4f0;
-  box-shadow: var(--dt-shadow-panel);
-  cursor: pointer;
+.lang-switch-enter-active,
+.lang-switch-leave-active {
+  transition: opacity 0.16s ease, transform 0.16s ease;
+  will-change: opacity, transform;
 }
 
-.device-card__top {
-  display: flex;
-  gap: 14px;
-  align-items: center;
+.lang-switch-enter-from {
+  opacity: 0;
+  transform: translateY(5px);
 }
 
-.drawer-help {
-  margin-top: 6px;
-  color: var(--dt-text-muted);
-  font-size: 12px;
-  line-height: 1.5;
+.lang-switch-enter-to {
+  opacity: 1;
+  transform: translateY(0);
 }
 
-.device-card__bottom {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding-top: 14px;
-  border-top: 1px solid #e3eaf4;
+.lang-switch-leave-from {
+  opacity: 1;
+  transform: translateY(0);
 }
 
-.device-card__status-row {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: start;
-  gap: 10px;
-  margin-top: -2px;
-}
-
-.device-status {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 24px;
-  padding: 0 12px;
-  border-radius: 999px;
-  background: #eef2f7;
-  color: #6b7a91;
-  font-size: 12px;
-  font-weight: 700;
-  white-space: nowrap;
-}
-
-.device-status--online {
-  background: rgba(24, 160, 88, 0.12);
-  color: #15804a;
-}
-
-.device-card__endpoint {
-  color: #6f7d93;
-  font-size: 13px;
-  line-height: 1.45;
-  min-width: 0;
-  overflow-wrap: anywhere;
-  word-break: break-word;
-  text-align: left;
-}
-
-.device-card__label {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.device-card__label strong {
-  color: #20324f;
-  font-size: 15px;
-}
-
-.device-card__label span {
-  color: #748299;
-  font-size: 13px;
-  line-height: 1.5;
-}
-
-.device-card__select {
-  width: 100%;
-}
-
-.device-icon {
-  width: 48px;
-  height: 48px;
-  border-radius: var(--dt-radius-subtle);
-  display: grid;
-  place-items: center;
-  background: linear-gradient(135deg, #1677ff, #0f5cc8);
-  color: white;
-  font-size: 20px;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2);
-}
-
-.device-meta {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.device-meta strong {
-  color: #17305a;
-  font-size: 16px;
-  font-weight: 700;
-  line-height: 1.25;
-}
-
-.device-meta span {
-  color: #6f7d93;
-  font-size: 13px;
+.lang-switch-leave-to {
+  opacity: 0;
+  transform: translateY(-5px);
 }
 
 .nav-list {
   display: flex;
   flex-direction: column;
-  margin-top: 26px;
-  gap: 20px;
-  padding-bottom: 16px;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+}
+
+.nav-home {
+  width: 100%;
+  min-height: 40px;
+  border: 1px solid transparent;
+  border-radius: var(--dt-radius-subtle);
+  background: transparent;
+  font-size: 15px;
+  font-weight: 700;
+  transition: all 0.3s ease;
+  position: relative;
+  overflow: visible;
+  box-shadow: none;
+}
+
+.nav-home :deep(.q-btn__content) {
+  width: 100%;
+  min-height: 40px;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 10px;
+  padding: 0 12px;
+  border-radius: inherit;
+}
+
+.nav-home :deep(.q-focus-helper) {
+  display: none;
+}
+
+.nav-home::before,
+.nav-home::after,
+.nav-home :deep(.q-btn__content)::before,
+.nav-home :deep(.q-btn__content)::after {
+  border-radius: inherit;
+}
+
+.nav-home:not(.nav-home--active):hover {
+  background: var(--dt-brand-primary-soft);
+  border-color: transparent;
+}
+
+.nav-home:not(.nav-home--active) {
+  color: var(--dt-text-secondary);
+}
+
+.nav-home :deep(.q-icon),
+.nav-subitem :deep(.q-icon) {
+  width: 20px;
+  height: 20px;
+  border-radius: 0;
+  background: transparent;
+  color: var(--dt-text-secondary);
+  box-shadow: none;
+  transition: color 0.3s ease;
+}
+
+.nav-home--active {
+  border-color: transparent;
+  border-radius: var(--dt-radius-subtle);
+  box-shadow: var(--dt-shadow-panel);
+}
+
+.nav-home--active :deep(.q-icon) {
+  color: #fff;
+  background: transparent;
+  box-shadow: none;
+}
+
+.nav-home.q-btn--push {
+  transform: none !important;
 }
 
 .nav-section {
@@ -412,117 +1198,1085 @@ async function toggleConnection() {
 }
 
 .nav-section__title {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  color: #42536d;
-  font-size: 16px;
-  font-weight: 700;
-  letter-spacing: 0;
-}
-
-.nav-section__title--link {
-  text-decoration: none;
-}
-
-.nav-section__title--active {
-  color: #1668dc;
+  padding: 0 12px;
+  color: var(--dt-text-secondary);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  min-height: auto;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
 }
 
 .nav-section__items {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  margin-left: 14px;
-  padding-left: 16px;
-  border-left: 1px solid #d8e2ee;
+  gap: 6px;
 }
 
 .nav-subitem {
-  display: flex;
-  gap: 12px;
+  display: inline-flex;
   align-items: center;
-  min-height: 40px;
-  padding: 10px 12px;
-  border-radius: var(--dt-radius-field);
-  color: #495a74;
-  text-decoration: none;
-  font-size: 15px;
+  gap: 14px;
+  min-height: 44px;
+  padding: 0 12px;
+  border-radius: var(--dt-radius-subtle);
+  border: 1px solid transparent;
+  color: var(--dt-text-secondary);
+  font-size: 14px;
   font-weight: 600;
-  letter-spacing: 0;
-  transition: background-color 0.2s ease, color 0.2s ease;
+  transition: background-color 0.18s ease, color 0.18s ease, border-color 0.18s ease;
 }
 
-.nav-subitem__dot {
-  width: 5px;
-  height: 5px;
-  border-radius: 999px;
-  background: #9dafc8;
-  flex: 0 0 auto;
+.nav-subitem--active,
+.nav-subitem:hover {
+  background: rgba(25, 118, 210, 0.12);
+  color: var(--dt-accent);
+  border-color: transparent;
+  box-shadow: none;
 }
 
-.nav-subitem.router-link-active,
-.nav-subitem.router-link-active {
-  background: #e8f1ff;
-  color: #1668dc;
-}
-
-.nav-subitem.router-link-active .nav-subitem__dot {
-  background: #1668dc;
+.nav-subitem--active :deep(.q-icon),
+.nav-subitem:hover :deep(.q-icon) {
+  color: var(--dt-accent);
 }
 
 .sidebar-bottom {
-  display: flex;
-  flex-direction: column;
-  gap: 0;
   flex: 0 0 auto;
-  min-height: auto;
-  padding-top: 16px;
-  border-top: 1px solid #dde5ef;
-  background:
-    linear-gradient(180deg, rgba(246, 248, 251, 0), rgba(246, 248, 251, 0.9) 20%, rgba(246, 248, 251, 0.98));
+  margin-top: 14px;
 }
 
 .device-dock {
-  display: block;
+  padding-top: 18px;
+  border-top: 0;
 }
 
-.main {
+.device-dock__settings {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: var(--dt-radius-subtle);
+  color: var(--dt-text-secondary);
+  background: var(--dt-gloss-surface-soft);
+  border: 1px solid var(--dt-border);
+  box-shadow: var(--dt-gloss-inset);
+  transition: background-color 0.18s ease, color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.device-dock__settings:hover,
+.device-dock__settings--active {
+  color: var(--dt-accent);
+  background: var(--dt-gloss-surface);
+  box-shadow:
+    var(--dt-gloss-inset),
+    var(--dt-shadow-panel);
+}
+
+.device-connect-panel {
+  position: relative;
   display: flex;
   flex-direction: column;
+  gap: 0;
+  padding: 14px;
+  min-height: 436px;
+  height: 436px;
+  border-radius: 12px;
+  background: var(--dt-gloss-surface);
+  border: 1px solid var(--dt-gloss-border);
+  box-shadow:
+    var(--dt-gloss-inset),
+    var(--dt-shadow-panel);
+  isolation: isolate;
+}
+
+.device-connect-panel::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--dt-text-contrast) 10%, transparent), transparent 22%);
+}
+
+:global(html[data-theme="dark"]) .device-connect-panel,
+:global(html.theme-dark) .device-connect-panel,
+:global(body.body--dark) .device-connect-panel,
+:global(body.theme-dark) .device-connect-panel,
+:global(body[data-theme="dark"]) .device-connect-panel {
+  background: linear-gradient(180deg, rgba(28, 23, 40, 0.96), rgba(20, 17, 30, 0.94));
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 18px 40px rgba(0, 0, 0, 0.32),
+    0 0 0 1px rgba(110, 124, 255, 0.06);
+}
+
+:global(html[data-theme="dark"]) .device-connect-panel::before,
+:global(html.theme-dark) .device-connect-panel::before,
+:global(body.body--dark) .device-connect-panel::before,
+:global(body.theme-dark) .device-connect-panel::before,
+:global(body[data-theme="dark"]) .device-connect-panel::before {
   background:
-    radial-gradient(circle at top right, rgba(22, 119, 255, 0.06), transparent 24%),
-    linear-gradient(180deg, #eef3f8, #e9eef5);
-  min-width: 0;
+    linear-gradient(180deg, rgba(255, 255, 255, 0.08), transparent 26%),
+    radial-gradient(circle at top left, rgba(110, 124, 255, 0.12), transparent 38%);
+}
+
+.device-connect-panel__head,
+.device-connect-panel__actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.device-connect-panel__head {
+  padding-bottom: 12px;
+}
+
+.device-connect-panel__head h3 {
+  margin: 0;
+  font-size: 16px;
+  line-height: 1.2;
+  font-weight: 800;
+  color: var(--dt-text-primary);
+}
+
+.device-connect-panel__body {
+  flex: 1 1 auto;
   min-height: 0;
+  padding: 0 0 12px;
+}
+
+.device-connect-panel__actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  margin-top: auto;
+  gap: 10px;
+  padding-top: 12px;
+}
+
+.device-connect-panel__actions :deep(.q-btn) {
+  font-weight: 800;
+  border-radius: var(--dt-radius-button);
+}
+
+.device-connect-panel__actions :deep(.device-connect-panel__action-secondary) {
+  color: #131623 !important;
+}
+
+.device-connect-panel__actions :deep(.device-connect-panel__action-secondary .q-btn__content) {
+  color: #131623 !important;
+}
+
+.device-connect-panel__actions :deep(.device-connect-panel__action-primary) {
+  color: #fff !important;
+}
+
+:global(html[data-theme="dark"]) .device-connect-panel__actions :deep(.device-connect-panel__action-secondary),
+:global(html.theme-dark) .device-connect-panel__actions :deep(.device-connect-panel__action-secondary),
+:global(body.body--dark) .device-connect-panel__actions :deep(.device-connect-panel__action-secondary),
+:global(body.theme-dark) .device-connect-panel__actions :deep(.device-connect-panel__action-secondary),
+:global(body[data-theme="dark"]) .device-connect-panel__actions :deep(.device-connect-panel__action-secondary) {
+  background: linear-gradient(180deg, rgba(248, 250, 255, 0.92), rgba(226, 231, 243, 0.88)) !important;
+  border: 1px solid rgba(255, 255, 255, 0.2) !important;
+  color: #131623 !important;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.24) !important;
+}
+
+:global(html[data-theme="dark"]) .device-connect-panel__actions :deep(.device-connect-panel__action-secondary .q-btn__content),
+:global(html.theme-dark) .device-connect-panel__actions :deep(.device-connect-panel__action-secondary .q-btn__content),
+:global(body.body--dark) .device-connect-panel__actions :deep(.device-connect-panel__action-secondary .q-btn__content),
+:global(body.theme-dark) .device-connect-panel__actions :deep(.device-connect-panel__action-secondary .q-btn__content),
+:global(body[data-theme="dark"]) .device-connect-panel__actions :deep(.device-connect-panel__action-secondary .q-btn__content) {
+  color: #131623 !important;
+}
+
+:global(html[data-theme="dark"]) .device-connect-panel__actions :deep(.device-connect-panel__action-primary),
+:global(html.theme-dark) .device-connect-panel__actions :deep(.device-connect-panel__action-primary),
+:global(body.body--dark) .device-connect-panel__actions :deep(.device-connect-panel__action-primary),
+:global(body.theme-dark) .device-connect-panel__actions :deep(.device-connect-panel__action-primary),
+:global(body[data-theme="dark"]) .device-connect-panel__actions :deep(.device-connect-panel__action-primary) {
+  background: linear-gradient(135deg, rgba(110, 124, 255, 0.92), rgba(88, 103, 232, 0.92)) !important;
+  border: 1px solid rgba(164, 173, 255, 0.22) !important;
+  color: #ffffff !important;
+  box-shadow: 0 12px 28px rgba(78, 89, 214, 0.28) !important;
+}
+
+:global(html[data-theme="dark"]) .device-connect-panel__actions :deep(.q-btn.q-btn--disabled),
+:global(html.theme-dark) .device-connect-panel__actions :deep(.q-btn.q-btn--disabled),
+:global(body.body--dark) .device-connect-panel__actions :deep(.q-btn.q-btn--disabled),
+:global(body.theme-dark) .device-connect-panel__actions :deep(.q-btn.q-btn--disabled),
+
+:global(html[data-theme="dark"]) .device-connect-panel__actions :deep(.device-connect-panel__action-secondary.q-btn--disabled),
+:global(html.theme-dark) .device-connect-panel__actions :deep(.device-connect-panel__action-secondary.q-btn--disabled),
+:global(body.body--dark) .device-connect-panel__actions :deep(.device-connect-panel__action-secondary.q-btn--disabled),
+:global(body.theme-dark) .device-connect-panel__actions :deep(.device-connect-panel__action-secondary.q-btn--disabled),
+:global(body[data-theme="dark"]) .device-connect-panel__actions :deep(.device-connect-panel__action-secondary.q-btn--disabled) {
+  background: linear-gradient(180deg, rgba(241, 244, 250, 0.78), rgba(215, 221, 235, 0.72)) !important;
+  color: rgba(45, 52, 70, 0.4) !important;
+  border-color: rgba(255, 255, 255, 0.14) !important;
+}
+
+:global(html[data-theme="dark"]) .device-connect-panel__actions :deep(.device-connect-panel__action-secondary.q-btn--disabled .q-btn__content),
+:global(html.theme-dark) .device-connect-panel__actions :deep(.device-connect-panel__action-secondary.q-btn--disabled .q-btn__content),
+:global(body.body--dark) .device-connect-panel__actions :deep(.device-connect-panel__action-secondary.q-btn--disabled .q-btn__content),
+:global(body.theme-dark) .device-connect-panel__actions :deep(.device-connect-panel__action-secondary.q-btn--disabled .q-btn__content),
+:global(body[data-theme="dark"]) .device-connect-panel__actions :deep(.device-connect-panel__action-secondary.q-btn--disabled .q-btn__content) {
+  color: rgba(45, 52, 70, 0.4) !important;
+}
+
+.device-connect-panel__actions > :deep(.q-btn) {
+  flex: 1 1 0;
+  width: calc((100% - 10px) / 2);
+  max-width: calc((100% - 10px) / 2);
+  min-width: 0;
+}
+
+.device-connect-panel__actions :deep(.q-btn__content) {
+  white-space: nowrap;
+}
+
+.shell-header {
+  position: absolute;
+  top: 0;
+  left: var(--shell-sidebar-width);
+  right: 0;
+  min-height: var(--shell-header-height);
+  background: var(--shell-header-surface);
+  color: var(--dt-text-primary);
+  backdrop-filter: none;
+  border-bottom: 1px solid var(--shell-divider-color);
+  box-shadow: none;
+  border-top-left-radius: 0;
+  border-top-right-radius: var(--dt-radius-window);
+  z-index: 30;
+}
+
+.shell-header::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: -2px;
+  bottom: 0;
+  width: 3px;
+  background: var(--shell-header-surface);
+  pointer-events: none;
+  z-index: 1;
+}
+
+.shell-header--config {
+  overflow: visible;
+}
+
+.shell-header--config::before {
+  content: none;
+}
+
+.shell-header__actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-left: 12px;
+  position: relative;
+  z-index: 2;
+  pointer-events: auto;
+  flex: 0 0 auto;
+  contain: layout paint;
+  transform: translateZ(0);
+  backface-visibility: hidden;
+}
+
+.shell-lang-switch {
+  width: 40px;
+  min-width: 40px;
+  height: 40px;
+  min-height: 40px;
+  border-radius: 999px;
+  border: 1px solid var(--dt-border);
+  background: var(--dt-brand-primary-soft);
+  color: var(--dt-text-primary);
+}
+
+.shell-lang-switch :deep(.q-btn__content),
+.shell-lang-switch :deep(.q-icon) {
+  color: inherit !important;
+}
+
+.shell-theme-switch {
+  width: 40px;
+  min-width: 40px;
+  height: 40px;
+  min-height: 40px;
+  border-radius: 999px;
+  border: 1px solid var(--dt-border);
+  background: var(--dt-bg-panel-soft);
+}
+
+.shell-theme-switch :deep(.q-btn__content),
+.shell-theme-switch :deep(.q-icon) {
+  color: inherit !important;
+}
+
+.shell-theme-switch:hover {
+  background: var(--dt-brand-primary-soft);
+  color: var(--dt-text-primary);
+}
+
+.shell-lang-switch__label {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.shell-window-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  position: relative;
+  z-index: 2;
+  pointer-events: auto;
+  flex: 0 0 auto;
+  contain: layout paint;
+}
+
+.shell-window-action {
+  min-width: 30px;
+  min-height: 30px;
+  color: var(--dt-text-secondary);
+  border-radius: var(--dt-radius-button);
+}
+
+.shell-window-action :deep(.q-focus-helper) {
+  display: none;
+}
+
+.shell-window-action :deep(.q-btn__content) {
+  min-width: 18px;
+  min-height: 18px;
+  color: inherit !important;
+}
+
+.shell-window-action :deep(.q-icon) {
+  font-size: 18px;
+  color: inherit !important;
+}
+
+.shell-window-action:hover {
+  background: var(--dt-brand-primary-soft);
+  color: var(--dt-text-primary);
+}
+
+.shell-window-action--close:hover {
+  background: var(--dt-status-danger-soft);
+  color: var(--dt-danger);
+}
+
+.shell-window-action.q-btn--disabled {
+  opacity: 0.5 !important;
+}
+
+.shell-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 12px;
+  min-height: var(--shell-header-height);
+  padding: 0 18px;
+  position: relative;
+}
+
+.shell-header__config-bar {
+  display: flex;
+  flex: 1;
+  width: 100%;
+  align-items: center;
+  gap: 12px;
+  min-height: var(--shell-header-height);
+  padding: 0 18px;
+  background: transparent;
+  backdrop-filter: none;
+  position: relative;
+}
+
+.shell-header__config-host {
+  min-width: 0;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  pointer-events: none;
+}
+
+.shell-toolbar__brand--config {
+  flex: 0 0 auto;
+}
+
+.shell-toolbar__brand {
+  display: flex;
+  align-items: center;
+  align-self: stretch;
+  gap: 10px;
+  min-width: 0;
+  padding: 0;
+  flex:1;
+  border-radius: 0;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+
+.shell-toolbar__brand--drag {
+  cursor: grab;
+  user-select: none;
+}
+
+.shell-toolbar__page-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: auto;
+  height: auto;
+  line-height: 1;
+  border-radius: 0;
+  background: transparent;
+  color: #2e7df1;
+  box-shadow: none;
+  flex: 0 0 auto;
+}
+
+.shell-toolbar__page-host {
+  flex: 0 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  position: relative;
+  z-index: 2;
+  pointer-events: none;
+  margin-left: auto;
+}
+
+.shell-toolbar__page-host > :deep(*) {
+  pointer-events: auto;
+}
+
+.shell-toolbar__title {
+  display: flex;
+  align-items: center;
+  align-self: stretch;
+  min-width: 0;
+  user-select: none;
+}
+
+.shell-toolbar__title--inline {
+  flex: 0 0 auto;
+  padding-right: 12px;
+}
+
+.shell-toolbar__title strong {
+  display: block;
+  font-size: 17px;
+  font-weight: 800;
+  line-height: 1.1;
+  color: #17355e;
+  cursor: pointer;
+}
+
+.shell-drag-region {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 28px;
+  z-index: 1;
+  cursor: grab;
+  user-select: none;
+}
+
+.shell-drag-region--full {
+  bottom: 0;
+  height: auto;
+}
+
+.shell-toolbar__brand,
+.shell-header__config-host {
+  position: relative;
+  z-index: 2;
+}
+
+.shell-frame {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: calc(100% - var(--shell-header-height));
+  min-height: 0;
+  margin-top: var(--shell-header-height);
+  padding-left: var(--shell-sidebar-width);
+  box-sizing: border-box;
+}
+
+.shell-frame-shadow {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: var(--shell-sidebar-width);
+  pointer-events: none;
+  background: transparent;
+  box-shadow: none;
+  z-index: 2;
+}
+
+.shell-page-container {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  height: 100%;
+  min-height: 0;
+  background: var(--dt-bg-shell);
+  border-left: 0;
+  border-bottom-right-radius: var(--dt-radius-window);
+}
+
+.shell-page-container::before {
+  content: none;
+}
+
+.shell-page-container--full {
+  height: 100%;
+  overflow: auto;
+}
+
+.shell-header--config {
+  background: var(--shell-header-surface);
+  border-bottom: 1px solid var(--dt-header-border);
+  box-shadow: none;
+}
+
+.shell-header__config-layout {
+  display: flex;
+  align-items: center;
+  min-height: var(--shell-header-height);
+}
+
+.shell-page {
+  display: flex;
+  flex: 1 1 auto;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
   overflow: hidden;
+  position: relative;
+  z-index: 1;
 }
 
 .content {
+  display: flex;
+  flex-direction: column;
   flex: 1;
-  overflow: hidden;
+  height: 100%;
   min-height: 0;
-  padding: 20px 20px 20px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  overflow: hidden;
+}
+
+.content--home,
+.content--config,
+.content--settings {
+  gap: 12px;
 }
 
 .content--home {
   padding: 0;
 }
 
+.content--config {
+  padding: 0;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: transparent;
+}
+
+.content--settings {
+  padding: 0;
+}
+
 .drawer-form {
   display: flex;
   flex-direction: column;
+  gap: 12px;
+}
+
+.drawer-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.drawer-field label {
+  color: var(--dt-text-secondary);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.drawer-field :deep(.q-field__control) {
+  background: var(--dt-bg-input);
+  box-shadow: var(--dt-gloss-inset);
+}
+
+.drawer-field :deep(.q-field--outlined .q-field__control:before) {
+  border-color: var(--dt-border);
+}
+
+.drawer-field :deep(.q-field--outlined.q-field--focused .q-field__control:after),
+.drawer-field :deep(.q-field--outlined.q-field--highlighted .q-field__control:after) {
+  border-color: var(--dt-brand-primary);
+}
+
+.drawer-field :deep(.q-field--dense .q-field__control),
+.drawer-field :deep(.q-field--dense .q-field__native),
+.drawer-field :deep(.q-field--dense .q-field__marginal) {
+  min-height: 36px;
+}
+
+.drawer-field :deep(.q-field--outlined .q-field__control) {
+  height: 36px;
+}
+
+.drawer-field :deep(.q-field--dense .q-field__control-container) {
+  padding-top: 0;
+}
+
+.drawer-field :deep(.q-field--dense .q-field__native),
+.drawer-field :deep(.q-field--dense .q-field__input) {
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+.drawer-help {
+  color: var(--dt-text-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.shell-toolbar__brand :deep(.q-btn) {
+  min-height: 38px;
+  border-radius: var(--dt-radius-button);
+}
+
+.shell-toolbar__brand :deep(.q-btn--flat) {
+  color: var(--dt-text-primary);
+}
+
+.shell-toolbar__brand :deep(.q-btn--flat:hover) {
+  background: var(--dt-brand-primary-soft);
+}
+
+.shell-toolbar__brand :deep(.q-btn[round]) {
+  color: var(--dt-header-muted);
+}
+
+.shell-sidebar {
+  background: transparent !important;
+  color: var(--dt-text-primary) !important;
+  border-right-color: var(--shell-divider-color) !important;
+  box-shadow: none !important;
+  overflow: visible !important;
+}
+
+.shell-sidebar .sidebar-surface {
+  background: var(--dt-bg-sidebar) !important;
+  box-shadow: none !important;
+}
+
+.shell-sidebar .drawer-shell {
+  background: var(--dt-bg-sidebar) !important;
+  border-right-color: var(--shell-divider-color);
+  position: relative;
+  z-index: 2;
+}
+
+.shell-sidebar .sidebar-brand,
+.shell-sidebar .sidebar-main,
+.shell-sidebar .sidebar-bottom,
+.shell-sidebar .sidebar-scroll,
+.shell-sidebar .sidebar-scroll__content {
+  background: var(--dt-bg-sidebar) !important;
+}
+
+.shell-sidebar .sidebar-brand {
+  background: var(--dt-bg-sidebar) !important;
+  border: 0;
+  box-shadow: none;
+}
+
+.shell-sidebar :deep(.q-scrollarea__content),
+.shell-sidebar :deep(.q-scrollarea__container),
+.shell-sidebar :deep(.q-scrollarea__viewport) {
+  background: var(--dt-bg-sidebar) !important;
+}
+
+.shell-sidebar .sidebar-brand {
+  padding-bottom: 16px;
+  border-bottom: 0;
+}
+
+.shell-sidebar .sidebar-brand .q-icon {
+  color: var(--dt-text-secondary);
+}
+
+.shell-sidebar .sidebar-brand__logo {
+  filter: none;
+}
+
+.shell-sidebar .nav-section {
+  gap: 12px;
+}
+
+.shell-sidebar .nav-section__title {
+  padding: 0 12px;
+  color: var(--dt-text-secondary);
+  font-weight: 700;
+  border: 0;
+  border-radius: 0;
+}
+
+.shell-sidebar .nav-section__title--active {
+  color: var(--dt-text-secondary);
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.shell-sidebar .nav-section__items {
+  margin-left: 0;
+  padding-left: 0;
+  border-left: 0;
+}
+
+.shell-sidebar .nav-subitem {
+  min-height: 44px;
+  padding: 0 12px;
+  color: var(--dt-text-secondary);
+  border: 1px solid transparent;
+  border-radius: var(--dt-radius-subtle);
+}
+
+.shell-sidebar .nav-subitem--active,
+.shell-sidebar .nav-subitem:hover {
+  background: var(--dt-bg-panel);
+  color: var(--dt-text-primary);
+  border-color: var(--dt-border);
+  box-shadow: none;
+}
+
+.shell-sidebar .nav-subitem__dot {
+  opacity: 0.9;
+  background: var(--dt-text-secondary);
+}
+
+.shell-sidebar--config {
+  background: transparent !important;
+  color: var(--dt-text-primary) !important;
+  border-right: 1px solid var(--shell-divider-color) !important;
+  box-shadow: none !important;
+  overflow: visible !important;
+}
+
+.shell-sidebar--config .sidebar-surface {
+  background: var(--dt-bg-sidebar) !important;
+}
+
+.shell-sidebar--config .sidebar-brand,
+.shell-sidebar--config .drawer-shell,
+.shell-sidebar--config .sidebar-main,
+.shell-sidebar--config .sidebar-bottom,
+.shell-sidebar--config .sidebar-scroll,
+.shell-sidebar--config .sidebar-scroll__content {
+  background: var(--dt-bg-sidebar) !important;
+  border-right-color: var(--shell-divider-color);
+}
+
+.shell-sidebar--config .sidebar-brand {
+  background: var(--dt-bg-sidebar) !important;
+  border: 0;
+  box-shadow: none;
+}
+
+.shell-sidebar--config .sidebar-brand {
+  border-bottom-color: transparent;
+}
+
+.shell-sidebar--config .sidebar-brand__tag,
+.shell-sidebar--config .sidebar-brand .q-icon {
+  color: var(--dt-text-secondary);
+}
+
+.shell-sidebar--config .sidebar-brand__logo {
+  filter: none;
+}
+
+.shell-sidebar--config .nav-section__title {
+  color: var(--dt-text-secondary);
+  border-color: transparent;
+  background: transparent;
+}
+
+.shell-sidebar--config .nav-section__title:hover,
+.shell-sidebar--config .nav-section__title--active {
+  color: var(--dt-text-secondary);
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.shell-sidebar--config .nav-section__title--active::before {
+  background: transparent;
+}
+
+.shell-sidebar--config .nav-section__items {
+  border-left-color: transparent;
+}
+
+.shell-sidebar--config .nav-subitem {
+  color: var(--dt-text-secondary);
+  background: transparent;
+}
+
+.shell-sidebar--config .nav-subitem--active,
+.shell-sidebar--config .nav-subitem:hover {
+  background: var(--dt-brand-primary-soft);
+  color: var(--dt-accent);
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.shell-sidebar--config .nav-subitem__dot {
+  background: var(--dt-text-secondary);
+}
+
+.shell-sidebar--config .nav-subitem--active .nav-subitem__dot,
+.shell-sidebar--config .nav-subitem:hover .nav-subitem__dot {
+  background: var(--dt-accent);
+}
+
+.shell-sidebar--config .device-dock {
+  border-top-color: rgba(148, 163, 184, 0.12);
+}
+
+.shell-sidebar .nav-subitem--active .nav-subitem__dot,
+.shell-sidebar .nav-subitem:hover .nav-subitem__dot {
+  background: var(--dt-accent);
+}
+
+.shell-sidebar .device-dock {
+  border-top: 1px solid transparent;
+}
+
+@media (max-width: 920px) {
+  .shell-sidebar {
+    display: none;
+  }
+
+  .shell-frame-shadow {
+    display: none;
+  }
+
+  .shell-page-container {
+    padding: 12px;
+    height: 100%;
+  }
+
+  .shell-page-container--full {
+    height: 100%;
+  }
+
+  .content {
+    padding: 0;
+  }
+
+  .content--config {
+    padding-left: 0;
+    padding-bottom: 0;
+  }
+
+  .content--settings {
+    padding: 0;
+  }
+
+  .shell-header {
+    left: 0;
+  }
+
+  .shell-frame {
+    padding-left: 0;
+  }
+}
+
+@media (max-width: 1280px) {
+  .shell-header__config-layout,
+  .shell-header__config-bar {
+    min-height: auto;
+  }
+
+  .shell-header__config-bar {
+    padding-top: 10px;
+    padding-bottom: 10px;
+    align-items: flex-start;
+  }
+}
+
+:global(html[data-theme="dark"]) .shell-header,
+:global(html.theme-dark) .shell-header,
+:global(body.body--dark) .shell-header,
+:global(body.theme-dark) .shell-header,
+:global(body[data-theme="dark"]) .shell-header {
+  border-bottom-color: color-mix(in srgb, var(--dt-accent) 34%, var(--dt-border-strong)) !important;
+}
+
+:global(html[data-theme="light"]) .shell-header,
+:global(html.theme-light) .shell-header,
+:global(body.body--light) .shell-header,
+:global(body.theme-light) .shell-header,
+:global(body[data-theme="light"]) .shell-header {
+  border-bottom-color: color-mix(in srgb, var(--dt-accent) 14%, var(--dt-border-strong)) !important;
+}
+
+:global(html[data-theme="dark"]) .app-shell,
+:global(html.theme-dark) .app-shell,
+:global(body.body--dark) .app-shell,
+:global(body.theme-dark) .app-shell,
+:global(body[data-theme="dark"]) .app-shell {
+  --shell-divider-color: color-mix(in srgb, var(--dt-accent) 34%, var(--dt-border-strong));
+}
+
+:global(html[data-theme="light"]) .app-shell,
+:global(html.theme-light) .app-shell,
+:global(body.body--light) .app-shell,
+:global(body.theme-light) .app-shell,
+:global(body[data-theme="light"]) .app-shell {
+  --shell-divider-color: color-mix(in srgb, var(--dt-accent) 14%, var(--dt-border-strong));
+}
+
+:global(html[data-theme="dark"]) .shell-header--config::before,
+:global(html.theme-dark) .shell-header--config::before,
+:global(body.body--dark) .shell-header--config::before,
+:global(body.theme-dark) .shell-header--config::before,
+:global(body[data-theme="dark"]) .shell-header--config::before {
+  border-bottom-color: transparent !important;
+}
+
+.cq-dialog {
+  width: min(520px, 92vw);
+  border-radius: 12px;
+  background: var(--dt-gloss-surface);
+  color: var(--dt-text-primary);
+  box-shadow: var(--dt-shadow-float);
+}
+
+.cq-dialog--generator {
+  width: min(760px, 94vw);
+}
+
+.cq-dialog__section {
+  padding: 18px 20px;
+}
+
+.cq-dialog__section--compact {
+  padding-top: 0;
+}
+
+.cq-dialog__title {
+  font-size: 18px;
+  font-weight: 800;
+  line-height: 1.3;
+}
+
+.cq-dialog__desc {
+  margin-top: 8px;
+  color: var(--dt-text-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.cq-dialog__transport-tabs {
+  width: 280px;
+  margin: 0 auto;
+}
+
+.cq-dialog__transport-tabs :deep(.q-btn) {
+  min-height: 38px;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.cq-dialog__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
 }
 
-.drawer-actions {
-  display: flex;
-  gap: 10px;
+.cq-dialog__field--full {
+  grid-column: 1 / -1;
 }
 
-@media (max-width: 1080px) {
-  .shell {
-    grid-template-columns: 280px 1fr;
+.cq-dialog__actions {
+  padding: 0 20px 18px;
+}
+
+@media (max-width: 760px) {
+  .cq-dialog__grid {
+    grid-template-columns: minmax(0, 1fr);
   }
+}
+</style>
+
+<style lang="scss">
+body.platform-mac .app-shell {
+  --shell-header-surface: var(--dt-header-surface);
+}
+
+body.platform-mac .shell-header {
+  background: var(--shell-header-surface);
+  color: var(--dt-text-primary);
+  border-bottom: 1px solid var(--shell-divider-color);
+}
+
+body.platform-mac .shell-header--config {
+  background: var(--shell-header-surface);
+}
+
+body.platform-mac .shell-toolbar,
+body.platform-mac .shell-header__config-bar {
+  padding-left: 18px;
+}
+
+body.platform-mac .shell-toolbar .q-btn--flat {
+  color: var(--dt-text-primary);
+}
+
+body.platform-mac .shell-toolbar .q-btn--flat:hover {
+  background: rgba(26, 115, 232, 0.06);
+}
+
+body.platform-mac .shell-toolbar .q-btn[round] {
+  color: var(--dt-header-muted);
 }
 </style>

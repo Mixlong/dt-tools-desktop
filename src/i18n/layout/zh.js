@@ -1,0 +1,38 @@
+export default {
+  title: {
+    workspace: "工作台",
+  },
+  language: {
+    notApplied: "语言切换未生效",
+  },
+  dialog: {
+    hotplugTitle: "检测到新设备",
+    hotplugMessage: "检测到串口适配器已接入（{port}），是否立即连接？",
+    hotplugLater: "稍后连接",
+    hotplugNow: "立即连接",
+  },
+  device: {
+    title: "连接设备",
+    manualModel: "型号",
+    manualModelPlaceholder: "输入型号后按回车读取配置",
+    manualModelRequired: "请先输入型号",
+    manualModelReadPending: "型号 {model} 的 CQ 配置串读取接口暂未接入",
+    cqCode: "CQ 配置串",
+    cqCodePlaceholder: "例如：CQ04000110",
+    transportMode: "通信模式",
+    meterBaudRate: "仪表波特率",
+    canFrameType: "CAN 帧类型",
+    canBaudRate: "CAN 波特率",
+    port: "端口",
+    refreshPorts: "刷新端口",
+    connectDevice: "连接设备",
+    disconnectDevice: "断开连接",
+    transportUart: "UART",
+    transportCan: "CAN",
+    frameStandard: "标准帧",
+    frameExtended: "扩展帧",
+    portsRefreshed: "端口列表已刷新",
+    serialConnected: "串口已连接",
+    serialDisconnected: "串口已断开",
+  },
+}

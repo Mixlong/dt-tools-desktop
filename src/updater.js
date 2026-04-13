@@ -1,7 +1,10 @@
-import { ElLoading, ElMessage, ElMessageBox } from "element-plus"
 import { invoke } from "@tauri-apps/api/core"
 import { openUrl } from "@tauri-apps/plugin-opener"
 import { check } from "@tauri-apps/plugin-updater"
+import { frontendLog } from "@/api/unimaster"
+import { translate } from "@/i18n"
+import { confirmAction, notifyInfo, withLoading } from "@/services/ui"
+import tauriConfig from "../src-tauri/tauri.conf.json"
 
 const UPDATER_CONFIGURATION_HINTS = [
   "REPLACE_WITH_DT_TOOLS_PUBLIC_KEY",
@@ -16,8 +19,35 @@ const UPDATER_CONFIGURATION_HINTS = [
   "status code 404",
 ]
 
+function getPerfNow() {
+  return typeof performance !== "undefined" ? performance.now() : Date.now()
+}
+
+function logStartupPerf(stage, details = {}) {
+  const serializedDetails = Object.entries(details)
+    .map(([key, value]) => `${key}=${value}`)
+    .join(" ")
+
+  const message = `[perf][startup][${stage}]${serializedDetails ? ` ${serializedDetails}` : ""}`
+  console.info(message)
+  frontendLog("info", message).catch(() => {})
+}
+
 function isTauriDesktop() {
   return typeof window !== "undefined" && Boolean(window.__TAURI_INTERNALS__)
+}
+
+function isUpdaterConfigured() {
+  const updater = tauriConfig?.plugins?.updater
+  const pubkey = String(updater?.pubkey || "").trim()
+  const endpoints = Array.isArray(updater?.endpoints) ? updater.endpoints.filter(Boolean) : []
+
+  return Boolean(
+    updater?.active
+    && endpoints.length
+    && pubkey
+    && pubkey !== "REPLACE_WITH_DT_TOOLS_PUBLIC_KEY",
+  )
 }
 
 function resolveManualDownloadUrl(updateUrl) {
@@ -37,12 +67,12 @@ async function restartApp() {
   try {
     await invoke("restart_app")
   } catch {
-    ElMessage.warning("更新已安装，请手动重启应用")
+    notifyInfo(translate("updater.restartManually"))
   }
 }
 
 function getErrorMessage(error) {
-  return String(error?.message || error || "未知错误")
+  return String(error?.message || error || translate("updater.unknownError"))
 }
 
 function isUpdaterNotReady(error) {
@@ -51,48 +81,82 @@ function isUpdaterNotReady(error) {
 }
 
 export async function checkForAppUpdateWithPrompt() {
-  if (!isTauriDesktop()) return
-  let loading = null
+  const startedAt = getPerfNow()
+
+  if (!isTauriDesktop() || !isUpdaterConfigured()) {
+    logStartupPerf("updater-skip", {
+      reason: !isTauriDesktop() ? "not-tauri" : "not-configured",
+    })
+    return
+  }
+
   let manualDownloadUrl = ""
+
   try {
+    logStartupPerf("updater-check-start")
     const update = await check()
-    if (!update) return
-    manualDownloadUrl = resolveManualDownloadUrl(String(update.rawJson?.url || ""))
-
-    await ElMessageBox.confirm(`检测到新版本 ${update.version}，是否立即下载并安装？`, "发现新版本", {
-      confirmButtonText: "立即更新",
-      cancelButtonText: "稍后",
-      type: "info",
-      closeOnClickModal: false,
-    })
-
-    loading = ElLoading.service({
-      lock: true,
-      text: "正在下载更新...",
-      background: "rgba(0, 0, 0, 0.45)",
-    })
-
-    await update.download(() => {
-      loading?.setText("下载完成，正在安装...")
-    })
-    await update.install()
-    ElMessage.success("更新已安装，正在自动重启...")
-    await restartApp()
-  } catch (error) {
-    if (error === "cancel" || error === "close") return
-    if (isUpdaterNotReady(error)) {
-      console.warn("[updater] updater is not configured correctly, skip startup check:", error)
+    if (!update) {
+      logStartupPerf("updater-check-none", {
+        totalMs: Math.round(getPerfNow() - startedAt),
+      })
       return
     }
-    const message = getErrorMessage(error)
-    await ElMessageBox.confirm(`检查或安装更新失败：${message}\n\n是否打开手动下载链接？`, "更新失败", {
-      confirmButtonText: "手动下载",
-      cancelButtonText: "取消",
-      type: "error",
-      closeOnClickModal: false,
+
+    logStartupPerf("updater-check-found", {
+      totalMs: Math.round(getPerfNow() - startedAt),
+      version: update.version,
     })
-    await openUrl(resolveManualDownloadUrl(manualDownloadUrl))
-  } finally {
-    loading?.close()
+
+    manualDownloadUrl = resolveManualDownloadUrl(String(update.rawJson?.url || ""))
+
+    const confirmed = await confirmAction({
+      title: translate("updater.availableTitle"),
+      message: translate("updater.availableMessage", { version: update.version }),
+      ok: translate("updater.updateNow"),
+      cancel: translate("updater.later"),
+    })
+
+    if (!confirmed) {
+      logStartupPerf("updater-declined", {
+        totalMs: Math.round(getPerfNow() - startedAt),
+      })
+      return
+    }
+
+    await withLoading(async () => {
+      await update.download()
+      await update.install()
+    }, { message: translate("updater.downloading") })
+
+    logStartupPerf("updater-installed", {
+      totalMs: Math.round(getPerfNow() - startedAt),
+    })
+
+    notifyInfo(translate("updater.installedRestarting"))
+    await restartApp()
+  } catch (error) {
+    if (isUpdaterNotReady(error)) {
+      logStartupPerf("updater-skip", {
+        totalMs: Math.round(getPerfNow() - startedAt),
+        reason: "not-ready",
+      })
+      return
+    }
+
+    logStartupPerf("updater-fail", {
+      totalMs: Math.round(getPerfNow() - startedAt),
+      error: getErrorMessage(error),
+    })
+
+    const openManual = await confirmAction({
+      title: translate("updater.failedTitle"),
+      message: translate("updater.failedMessage", { message: getErrorMessage(error) }),
+      ok: translate("updater.manualDownload"),
+      cancel: translate("common.actions.cancel"),
+    })
+
+    if (openManual) {
+      await openUrl(resolveManualDownloadUrl(manualDownloadUrl))
+    }
   }
 }

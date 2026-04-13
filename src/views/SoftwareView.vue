@@ -1,716 +1,576 @@
 <template>
-  <div class="software-page">
-    <section class="software-head">
-      <div>
-        <span class="section-eyebrow">Firmware Workspace</span>
-        <h2>程序烧录</h2>
-        <p>保留版本管理，同时将旧项目中的实时升级、离线烧录和配置文件烧录整合到统一工作台。</p>
-      </div>
-      <el-tag :type="deviceStore.connectionStatus === 'CONNECTED' ? 'success' : 'info'">
-        {{ deviceStore.connectionStatus === "CONNECTED" ? deviceStore.onlineStatus : "未连接适配器" }}
-      </el-tag>
+  <div class="program-burning-page program-burning-page--local">
+    <section class="workspace-panel workspace-panel--local">
+      <section class="workspace-panel__content workspace-panel__content--local">
+        <div class="file-grid file-grid--local">
+          <div
+            v-for="item in localFileMetas.filter((item) => localKindOrder.includes(item.kind))"
+            :key="`local-${item.kind}`"
+            class="file-card file-card--local"
+            :class="{ 'file-card--active': localFiles[item.kind].isActive }"
+          >
+            <div class="file-card__head">
+              <div class="file-card__head-main">
+                <div class="file-card__labels">
+                  <span class="file-card__tag">{{ item.label }}</span>
+                  <span class="file-card__format">{{ item.tip }}</span>
+                  <span :class="['file-state-chip', { 'file-state-chip--active': localFiles[item.kind].isActive }]">
+                    {{ getFileStateLabel(localFiles[item.kind]) }}
+                  </span>
+                </div>
+              </div>
+            </div>
+            <div class="file-card__dropzone">
+              <div class="file-card__dropzone-icon">
+                <q-icon :name="localFiles[item.kind].fileName ? 'task_alt' : 'upload_file'" size="22px" />
+              </div>
+              <div class="file-card__dropzone-copy">
+                <strong>{{ localFiles[item.kind].fileName || t("software.local.fileNotImported", { label: item.label }) }}</strong>
+                <p>{{ localFiles[item.kind].fileName ? t("software.local.fileReady") : t("software.local.fileSupport", { tip: item.tip }) }}</p>
+              </div>
+            </div>
+            <div class="file-card__progress">
+              <q-linear-progress
+                rounded
+                size="8px"
+                :value="localFiles[item.kind].percent / 100"
+                color="primary"
+              />
+              <span>{{ localFiles[item.kind].percent }}%</span>
+            </div>
+            <div class="file-terminal">
+              <div class="file-terminal__head">
+                <strong>{{ t("software.local.terminalTitle", { label: item.label }) }}</strong>
+                <q-btn
+                  flat
+                  dense
+                  size="12px"
+                  color="grey-5"
+                  icon="delete_sweep"
+                  :disable="!terminalLogs[item.kind]?.length"
+                  @click="clearLocalLogs(item.kind)"
+                />
+              </div>
+              <div
+                :ref="(element) => setTerminalBodyRef(item.kind, element)"
+                class="file-terminal__body"
+              >
+                <template v-if="terminalLogs[item.kind]?.length">
+                  <q-virtual-scroll
+                    :ref="(element) => setTerminalRef(item.kind, element)"
+                    :items="terminalLogs[item.kind]"
+                    :virtual-scroll-item-size="28"
+                    class="file-terminal__scroll"
+                    separator
+                  >
+                    <template #default="{ item: line, index }">
+                      <div :key="`${item.kind}-${index}-${line}`" class="file-terminal__line">
+                        <span class="file-terminal__index">{{ String(index + 1).padStart(2, "0") }}</span>
+                        <span>{{ line }}</span>
+                      </div>
+                    </template>
+                  </q-virtual-scroll>
+                </template>
+                <div v-else class="file-terminal__empty">
+                  {{ t("software.local.waitingLogs", { label: item.label }) }}
+                </div>
+              </div>
+            </div>
+            <div class="file-card__actions">
+              <input
+                :ref="(element) => setLocalFileInput(item.kind, element)"
+                class="hidden-input"
+                type="file"
+                :accept="item.accept"
+                @change="handleLocalFileChange($event, item.kind)"
+              />
+              <q-btn push color="primary" :label="t('software.local.selectFile', { label: item.label })" @click="openLocalFile(item.kind)" />
+              <q-btn
+                outline
+                color="negative"
+                :label="t('software.local.clear')"
+                :disable="!localFiles[item.kind].fileName"
+                @click="resetLocalFile(item.kind)"
+              />
+              <q-btn
+                push
+                color="positive"
+                :label="t('software.local.startUpgrade')"
+                :loading="upgradeLoading"
+                :disable="!localFiles[item.kind].fileName || !sharedCqCode"
+                @click="handleSingleLocalUpgrade(item.kind)"
+              />
+            </div>
+          </div>
+        </div>
+      </section>
     </section>
-
-    <div class="software-tabbar">
-      <button
-        v-for="item in tabs"
-        :key="item.value"
-        :class="['software-tab', { 'software-tab--active': activeTab === item.value }]"
-        type="button"
-        @click="activeTab = item.value"
-      >
-        {{ item.label }}
-      </button>
-    </div>
-
-    <div v-if="activeTab === 'version'" class="grid-two">
-      <div class="page-card">
-        <div class="section-toolbar">
-          <div>
-            <h3>版本与标志区</h3>
-            <p>命令覆盖 `0xA0 / 0xB0 / 0xB1 / 0xB2 / 0xB3 / 0xB4`。</p>
-          </div>
-          <el-button type="primary" :loading="versionLoading" @click="loadSnapshot">刷新快照</el-button>
-        </div>
-
-        <div class="version-summary">
-          <div class="summary-item">
-            <span>APP 版本</span>
-            <strong>{{ snapshot.appVersion || "--" }}</strong>
-          </div>
-          <div class="summary-item">
-            <span>UI 版本</span>
-            <strong>{{ snapshot.uiVersion || "--" }}</strong>
-          </div>
-        </div>
-
-        <el-table :data="snapshot.versionItems" height="320">
-          <el-table-column prop="label" label="类型" width="140" />
-          <el-table-column prop="value" label="值" min-width="220" show-overflow-tooltip />
-          <el-table-column prop="rawHex" label="原始 HEX" min-width="180" show-overflow-tooltip />
-        </el-table>
-      </div>
-
-      <div class="page-card">
-        <h3>写入版本信息 / 标志位</h3>
-        <el-form label-position="top">
-          <el-form-item label="版本类型">
-            <el-select v-model="versionForm.code">
-              <el-option
-                v-for="item in VERSION_TYPE_OPTIONS"
-                :key="item.value"
-                :label="item.label"
-                :value="item.value"
-              />
-            </el-select>
-          </el-form-item>
-          <el-form-item :label="needsHexInput ? 'HEX 内容（4 字节）' : '文本内容'">
-            <el-input
-              v-model="versionForm.value"
-              :placeholder="needsHexInput ? '例如 12 34 56 78' : '例如 APP_BC280_V1.000'"
-            />
-          </el-form-item>
-        </el-form>
-        <div class="actions">
-          <el-button type="primary" :loading="writeLoading" @click="submitVersion">写入版本信息</el-button>
-          <el-button :loading="languageLoading" @click="changeLanguage(0)">切中文</el-button>
-          <el-button :loading="languageLoading" @click="changeLanguage(1)">切英文</el-button>
-        </div>
-
-        <div class="flag-panel">
-          <div class="flag-head">
-            <h4>标志区</h4>
-            <el-button text @click="refreshFlags">刷新</el-button>
-          </div>
-          <el-table :data="snapshot.flags" height="220">
-            <el-table-column prop="index" label="位置" width="72" />
-            <el-table-column prop="label" label="名称" width="120" />
-            <el-table-column prop="value" label="值" width="120" />
-            <el-table-column prop="hex" label="HEX" min-width="140" />
-          </el-table>
-          <div class="flag-write">
-            <div class="flag-write__field">
-              <span class="flag-write__label">位置</span>
-              <el-input-number v-model="flagForm.position" :min="0" :max="15" />
-            </div>
-            <div class="flag-write__field">
-              <span class="flag-write__label">HEX 值</span>
-              <el-input v-model="flagForm.hexValue" placeholder="4 字节 HEX，如 00 00 00 01" />
-            </div>
-            <div class="flag-write__field flag-write__field--switch">
-              <span class="flag-write__label">写入后关机</span>
-              <el-switch v-model="flagForm.shutdownAfterWrite" />
-            </div>
-            <div class="flag-write__actions">
-              <el-button :loading="flagLoading" @click="submitFlag">写入标志位</el-button>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <div v-else-if="activeTab === 'realtime'" class="grid-two">
-      <div class="page-card">
-        <div class="section-toolbar">
-          <div>
-            <h3>实时升级</h3>
-            <p>按文件逐个初始化烧录类型，兼容旧项目的 BOOT / APP / UI / 配置文件工作流。</p>
-          </div>
-          <el-button :loading="realtimeInitLoading" @click="initRealtimeOnly">仅初始化当前参数</el-button>
-        </div>
-
-        <el-form label-position="top" class="form-grid">
-          <el-form-item label="通讯类型">
-            <el-select v-model="realtimeForm.commType">
-              <el-option
-                v-for="item in REALTIME_COMM_OPTIONS"
-                :key="item.value"
-                :label="item.label"
-                :value="item.value"
-              />
-            </el-select>
-          </el-form-item>
-          <el-form-item label="波特率">
-            <el-select v-model="realtimeForm.baudCode">
-              <el-option
-                v-for="item in realtimeBaudOptions"
-                :key="item.code"
-                :label="item.label"
-                :value="item.code"
-              />
-            </el-select>
-          </el-form-item>
-          <el-form-item label="帧类型">
-            <el-select v-model="realtimeForm.frameType">
-              <el-option v-for="item in FRAME_TYPE_OPTIONS" :key="item.value" :label="item.label" :value="item.value" />
-            </el-select>
-          </el-form-item>
-          <el-form-item label="供电电压">
-            <el-select v-model="realtimeForm.powerVoltage">
-              <el-option v-for="item in POWER_OPTIONS" :key="item.value" :label="item.label" :value="item.value" />
-            </el-select>
-          </el-form-item>
-          <el-form-item label="协议类型">
-            <el-select v-model="realtimeForm.protocolType">
-              <el-option v-for="item in PROTOCOL_OPTIONS" :key="item.value" :label="item.label" :value="item.value" />
-            </el-select>
-          </el-form-item>
-          <el-form-item label="VLK5V">
-            <el-switch v-model="realtimeForm.vlk5vEnabled" />
-          </el-form-item>
-        </el-form>
-
-        <div class="upload-grid upload-grid--wide">
-          <label
-            v-for="item in uploadMetas"
-            :key="`realtime-${item.key}`"
-            class="upload-card"
-          >
-            <div class="upload-card__head">
-              <span>{{ item.label }}</span>
-              <small>{{ item.tip }}</small>
-            </div>
-            <input :accept="item.accept" type="file" @change="onUploadChange($event, realtimeFiles, item.key)" />
-            <strong>{{ getUploadedName(realtimeFiles[item.key]) }}</strong>
-            <p v-if="item.key === 'config'" class="upload-card__summary">
-              {{ getConfigSummary(realtimeFiles.config) }}
-            </p>
-          </label>
-        </div>
-
-        <div class="actions">
-          <el-button :loading="accessLoading" @click="checkAccess">检测接入状态</el-button>
-          <el-button type="primary" :loading="realtimeLoading" @click="runRealtimeUpgrade">开始实时升级</el-button>
-        </div>
-      </div>
-
-      <div class="page-card page-card--log">
-        <div class="section-toolbar section-toolbar--compact">
-          <div>
-            <h3>实时升级日志</h3>
-            <p>按文件独立初始化，便于追踪旧项目里的逐项烧录流程。</p>
-          </div>
-          <span class="metric-chip">
-            <span class="metric-chip__dot" />
-            {{ realtimeResult.stage || "未开始" }}
-          </span>
-        </div>
-        <el-progress :percentage="realtimeResult.progress" :stroke-width="14" />
-        <div ref="realtimeLogRef" class="dark-box dark-box--fill">
-          <div v-for="(item, index) in realtimeResult.logs" :key="`rt-${index}`">{{ item }}</div>
-        </div>
-      </div>
-    </div>
-
-    <div v-else class="grid-two">
-      <div class="page-card">
-        <div class="section-toolbar">
-          <div>
-            <h3>离线烧录包准备</h3>
-            <p>保留现有离线准备链路，并补上配置文件写入能力。</p>
-          </div>
-        </div>
-
-        <el-form label-position="top" class="form-grid">
-          <el-form-item label="供电电压">
-            <el-select v-model="offlineForm.powerVoltage">
-              <el-option v-for="item in POWER_OPTIONS" :key="item.value" :label="item.label" :value="item.value" />
-            </el-select>
-          </el-form-item>
-          <el-form-item label="通讯类型">
-            <el-select v-model="offlineForm.commType">
-              <el-option v-for="item in OFFLINE_COMM_OPTIONS" :key="item.value" :label="item.label" :value="item.value" />
-            </el-select>
-          </el-form-item>
-          <el-form-item label="配置波特率通讯类型">
-            <el-select v-model="offlineForm.configCommType">
-              <el-option
-                v-for="item in OFFLINE_BAUD_COMM_OPTIONS"
-                :key="item.value"
-                :label="item.label"
-                :value="item.value"
-              />
-            </el-select>
-          </el-form-item>
-          <el-form-item label="波特率编码">
-            <el-select v-model="offlineForm.configBaudCode">
-              <el-option
-                v-for="item in offlineBaudOptions"
-                :key="item.code"
-                :label="item.label"
-                :value="item.code"
-              />
-            </el-select>
-          </el-form-item>
-          <el-form-item label="帧类型">
-            <el-select v-model="offlineForm.configFrameType">
-              <el-option v-for="item in FRAME_TYPE_OPTIONS" :key="item.value" :label="item.label" :value="item.value" />
-            </el-select>
-          </el-form-item>
-          <el-form-item label="UI 版本号">
-            <el-input v-model="offlineForm.uiVersion" placeholder="可选，最长 32 字节" />
-          </el-form-item>
-        </el-form>
-
-        <div class="upload-grid upload-grid--wide">
-          <label
-            v-for="item in uploadMetas"
-            :key="`offline-${item.key}`"
-            class="upload-card"
-          >
-            <div class="upload-card__head">
-              <span>{{ item.label }}</span>
-              <small>{{ item.tip }}</small>
-            </div>
-            <input :accept="item.accept" type="file" @change="onUploadChange($event, offlineFiles, item.key)" />
-            <strong>{{ getUploadedName(offlineFiles[item.key]) }}</strong>
-            <p v-if="item.key === 'config'" class="upload-card__summary">
-              {{ getConfigSummary(offlineFiles.config) }}
-            </p>
-          </label>
-        </div>
-
-        <div class="actions">
-          <el-button type="primary" :loading="offlineLoading" @click="runOfflinePrepare">同步离线烧录包</el-button>
-        </div>
-      </div>
-
-      <div class="page-card page-card--log">
-        <div class="section-toolbar section-toolbar--compact">
-          <div>
-            <h3>离线烧录日志</h3>
-            <p>输出 0x16 / 0x17 / 0x35 / 0x36 / 0x31~0x34 / 0x14 的执行结果。</p>
-          </div>
-          <span class="metric-chip">
-            <span class="metric-chip__dot" />
-            {{ offlineResult.stage || "未开始" }}
-          </span>
-        </div>
-        <el-progress :percentage="offlineResult.progress" :stroke-width="14" />
-        <div ref="offlineLogRef" class="dark-box dark-box--fill">
-          <div v-for="(item, index) in offlineResult.logs" :key="`offline-${index}`">{{ item }}</div>
-        </div>
-      </div>
-    </div>
   </div>
 </template>
 
 <script setup>
-import { ElMessage } from "element-plus"
+import { listen } from "@tauri-apps/api/event"
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue"
+import { useI18n } from "vue-i18n"
+import { useDeviceStore } from "@/store/device"
+import { notifyError, notifySuccess } from "@/services/ui"
 import {
   fileToBytes,
-  initRealtimeUpgrade,
-  parseHexInput,
+  loadProgramBurningBundle,
   performRealtimeUpgrade,
   prepareOfflineUpgrade,
-  readAccessState,
-  readFlags,
-  readVersionSnapshot,
-  switchLanguage,
-  writeFlag,
-  writeVersionInfo,
 } from "@/api/unimaster"
-import {
-  FILE_KIND_OPTIONS,
-  FRAME_TYPE_OPTIONS,
-  OFFLINE_BAUD_COMM_OPTIONS,
-  OFFLINE_COMM_OPTIONS,
-  POWER_OPTIONS,
-  PROTOCOL_OPTIONS,
-  REALTIME_COMM_OPTIONS,
-  VERSION_TYPE_OPTIONS,
-  getBaudOptionsByCommType,
-  getFileTypeCode,
-} from "@/constants/unimaster"
-import { useDeviceStore } from "@/store/device"
 import { prepareMeterConfigUpgradeFile } from "@/utils/unimaster-config"
+import {
+  buildUpgradeCqCode,
+  createDefaultUpgradeCqState,
+  getUpgradeBurnFileType,
+  parseUpgradeCqCode,
+} from "@/utils/upgrade-cq"
 
 const deviceStore = useDeviceStore()
+const { t } = useI18n()
 
-const tabs = [
-  { label: "版本管理", value: "version" },
-  { label: "实时升级", value: "realtime" },
-  { label: "离线烧录", value: "offline" },
+const kindOrder = ["boot", "app", "ui", "config"]
+const localKindOrder = ["app", "ui"]
+const kindLabelMap = {
+  boot: "BOOT",
+  app: "APP",
+  ui: "UI",
+  config: "CFG",
+}
+
+const localFileMetas = [
+  { kind: "boot", label: "BOOT", accept: ".bin", tip: "BIN" },
+  { kind: "app", label: "APP", accept: ".hex,.bin", tip: "HEX / BIN" },
+  { kind: "ui", label: "UI", accept: ".txt,.bin", tip: "TXT / BIN" },
+  { kind: "config", label: "CFG", accept: ".json,.ini", tip: "JSON / INI" },
 ]
 
-const uploadMetas = [
-  { key: "boot", label: "BOOT 文件", accept: ".bin", tip: "离线与实时均支持 BIN" },
-  { key: "app", label: "APP 文件", accept: ".hex,.bin", tip: "支持 HEX / BIN" },
-  { key: "ui", label: "UI 文件", accept: ".txt,.bin", tip: "支持 TXT / BIN" },
-  { key: "config", label: "配置文件", accept: ".json,.ini", tip: "会自动解析为 54 字节参数块" },
-]
-
-const activeTab = ref("version")
-
-const snapshot = reactive({
-  appVersion: "",
-  uiVersion: "",
-  versionItems: [],
-  flags: [],
+const onlineBundleLoading = ref(false)
+const syncLoading = ref(false)
+const upgradeLoading = ref(false)
+const onlineBundleForm = reactive({
+  codeOrSn: "8QeJB9d3c8",
 })
 
-const versionLoading = ref(false)
-const writeLoading = ref(false)
-const flagLoading = ref(false)
-const languageLoading = ref(false)
-const accessLoading = ref(false)
-const realtimeInitLoading = ref(false)
-const realtimeLoading = ref(false)
-const offlineLoading = ref(false)
-
-const versionForm = reactive({
-  code: 4,
-  value: "",
+const onlineBundle = reactive({
+  computerName: "",
 })
 
-const flagForm = reactive({
-  position: 0,
-  hexValue: "00 00 00 01",
-  shutdownAfterWrite: false,
+function createFileState(kind) {
+  return {
+    kind,
+    label: kindLabelMap[kind],
+    fileName: "",
+    sourceUrl: "",
+    data: null,
+    isActive: false,
+    percent: 0,
+  }
+}
+
+const onlineFilesState = reactive({
+  boot: createFileState("boot"),
+  app: createFileState("app"),
+  ui: createFileState("ui"),
+  config: createFileState("config"),
 })
+
+const localFiles = reactive({
+  boot: createFileState("boot"),
+  app: createFileState("app"),
+  ui: createFileState("ui"),
+  config: createFileState("config"),
+})
+
+const localInputs = reactive({
+  boot: null,
+  app: null,
+  ui: null,
+  config: null,
+})
+const terminalLogs = reactive({
+  app: [],
+  ui: [],
+})
+const terminalRefs = reactive({
+  app: null,
+  ui: null,
+})
+const terminalBodyRefs = reactive({
+  app: null,
+  ui: null,
+})
+
+const operationState = reactive({
+  stage: "",
+  logs: [],
+})
+let currentUpgradeGroup = null
+let unlistenUpgradeProgress = null
+let currentLogKinds = []
 
 const realtimeForm = reactive({
   model: deviceStore.currentModel,
-  commType: 0,
-  baudCode: 0x0b,
-  frameType: 0,
-  powerVoltage: 0,
-  vlk5vEnabled: true,
+  ...createDefaultUpgradeCqState(),
   protocolType: 0x01,
   burnFileType: 1,
 })
-
-const offlineForm = reactive({
-  model: deviceStore.currentModel,
-  powerVoltage: 0,
-  commType: 0,
-  configCommType: 1,
-  configBaudCode: 0x0b,
-  configFrameType: 0,
-  uiVersion: "",
-})
-
-const realtimeFiles = reactive({
-  boot: null,
-  app: null,
-  ui: null,
-  config: null,
-})
-
-const offlineFiles = reactive({
-  boot: null,
-  app: null,
-  ui: null,
-  config: null,
-})
-
-const realtimeResult = reactive({
-  progress: 0,
-  stage: "",
-  logs: [],
-})
-
-const offlineResult = reactive({
-  progress: 0,
-  stage: "",
-  logs: [],
-})
-
-const realtimeLogRef = ref(null)
-const offlineLogRef = ref(null)
-
-const needsHexInput = computed(() => [5, 6].includes(versionForm.code))
-const realtimeBaudOptions = computed(() => getBaudOptionsByCommType(realtimeForm.commType))
-const offlineBaudOptions = computed(() => getBaudOptionsByCommType(offlineForm.configCommType, true))
 
 watch(
   () => deviceStore.currentModel,
   (value) => {
     realtimeForm.model = value
-    offlineForm.model = value
   },
   { immediate: true },
 )
 
-watch(
-  () => realtimeForm.commType,
-  () => {
-    realtimeForm.baudCode = realtimeBaudOptions.value[0]?.code || 0x0b
-    realtimeForm.frameType = realtimeForm.commType === 2 ? 1 : 0
-  },
-)
-
-watch(
-  () => offlineForm.configCommType,
-  () => {
-    offlineForm.configBaudCode = offlineBaudOptions.value[0]?.code || 0x0b
-    offlineForm.configFrameType = offlineForm.configCommType === 3 ? 1 : 0
-  },
-)
-
-watch(
-  () => realtimeResult.logs.length,
-  async () => {
-    await nextTick()
-    scrollLogToBottom(realtimeLogRef.value)
-  },
-)
-
-watch(
-  () => offlineResult.logs.length,
-  async () => {
-    await nextTick()
-    scrollLogToBottom(offlineLogRef.value)
-  },
-)
-
-onMounted(() => {
-  loadSnapshot()
+onMounted(async () => {
+  unlistenUpgradeProgress = await listen("upgrade-progress", (event) => {
+    applyUpgradeProgress(event.payload)
+  })
 })
 
-async function loadSnapshot() {
-  versionLoading.value = true
-  try {
-    const data = await readVersionSnapshot()
-    Object.assign(snapshot, data)
-  } catch (error) {
-    ElMessage.error(String(error))
-  } finally {
-    versionLoading.value = false
+onBeforeUnmount(() => {
+  unlistenUpgradeProgress?.()
+  unlistenUpgradeProgress = null
+})
+
+const hasActiveLocalFiles = computed(() => localKindOrder.some((kind) => localFiles[kind].isActive))
+const localSelectedCount = computed(() => localKindOrder.filter((kind) => localFiles[kind].isActive).length)
+const localReadyCount = computed(() => localKindOrder.filter((kind) => localFiles[kind].fileName).length)
+const sharedCqCode = computed(() => String(deviceStore.upgradeCqCode || "").trim().toUpperCase())
+
+function getUpgradeCommType() {
+  return deviceStore.meterCommType === 0x02 ? 0x02 : 0x00
+}
+
+function buildRealtimeInitRequest(file) {
+  const parsedCq = parseUpgradeCqCode(sharedCqCode.value)
+  const burnFileType = getUpgradeBurnFileType(file.kind)
+  const resolvedCqCode = buildUpgradeCqCode(parsedCq, burnFileType)
+
+  return {
+    ...realtimeForm,
+    model: onlineBundle.computerName || realtimeForm.model || deviceStore.currentModel || "UniMaster",
+    commType: parsedCq.commType,
+    baudCode: parsedCq.baudCode,
+    frameType: parsedCq.frameType,
+    powerVoltage: parsedCq.powerVoltage,
+    vlk5vEnabled: Boolean(parsedCq.vlk5vEnabled),
+    protocolType: parsedCq.protocolType,
+    burnFileType,
+    frameId: parsedCq.frameId,
+    cqCode: resolvedCqCode,
+    fileName: file.fileName,
   }
 }
 
-async function refreshFlags() {
+async function loadOnlineBundle() {
+  onlineBundleLoading.value = true
   try {
-    snapshot.flags = await readFlags()
-  } catch (error) {
-    ElMessage.error(String(error))
-  }
-}
+    resetFileGroup(onlineFilesState)
+    onlineBundle.computerName = ""
+    const result = await loadProgramBurningBundle(onlineBundleForm.codeOrSn)
+    onlineBundle.computerName = result.computerName || ""
 
-async function submitVersion() {
-  writeLoading.value = true
-  try {
-    const request = needsHexInput.value
-      ? { code: versionForm.code, valueHex: parseHexInput(versionForm.value) }
-      : { code: versionForm.code, valueText: versionForm.value }
-    const result = await writeVersionInfo(request)
-    ElMessage[result.success ? "success" : "warning"](result.message)
-    await loadSnapshot()
-  } catch (error) {
-    ElMessage.error(String(error))
-  } finally {
-    writeLoading.value = false
-  }
-}
-
-async function changeLanguage(language) {
-  languageLoading.value = true
-  try {
-    const result = await switchLanguage(language)
-    ElMessage[result.success ? "success" : "warning"](result.message)
-  } catch (error) {
-    ElMessage.error(String(error))
-  } finally {
-    languageLoading.value = false
-  }
-}
-
-async function submitFlag() {
-  flagLoading.value = true
-  try {
-    const bytes = parseHexInput(flagForm.hexValue)
-    if (bytes.length !== 4) {
-      throw new Error("标志位必须是 4 个字节")
-    }
-    const result = await writeFlag({
-      position: flagForm.position,
-      value: ((bytes[0] << 24) | (bytes[1] << 16) | (bytes[2] << 8) | bytes[3]) >>> 0,
-      shutdownAfterWrite: flagForm.shutdownAfterWrite,
-    })
-    ElMessage[result.success ? "success" : "warning"](result.message)
-    await refreshFlags()
-  } catch (error) {
-    ElMessage.error(String(error))
-  } finally {
-    flagLoading.value = false
-  }
-}
-
-async function checkAccess() {
-  accessLoading.value = true
-  try {
-    const result = await readAccessState()
-    ElMessage[result.success ? "success" : "warning"](result.message)
-  } catch (error) {
-    ElMessage.error(String(error))
-  } finally {
-    accessLoading.value = false
-  }
-}
-
-async function initRealtimeOnly() {
-  realtimeInitLoading.value = true
-  try {
-    const burnType = getFirstSelectedKind(realtimeFiles)
-    realtimeForm.burnFileType = getRealtimeBurnType(burnType)
-    const result = await initRealtimeUpgrade({ ...realtimeForm })
-    ElMessage[result.success ? "success" : "warning"](result.message)
-  } catch (error) {
-    ElMessage.error(String(error))
-  } finally {
-    realtimeInitLoading.value = false
-  }
-}
-
-async function runRealtimeUpgrade() {
-  realtimeLoading.value = true
-  Object.assign(realtimeResult, {
-    progress: 0,
-    stage: "准备中",
-    logs: [],
-  })
-
-  try {
-    const files = await collectFiles(realtimeFiles)
-    if (files.length === 0) {
-      throw new Error("请至少选择一个实时升级文件")
-    }
-
-    for (const [index, file] of files.entries()) {
-      appendUpgradeLog(realtimeResult, `开始处理 ${file.fileName}`)
-      const result = await performRealtimeUpgrade({
-        init: {
-          ...realtimeForm,
-          burnFileType: getRealtimeBurnType(file.kind),
-        },
-        files: [file],
-      })
-
-      realtimeResult.logs.push(...result.logs)
-      realtimeResult.progress = Math.round(((index + 1) / files.length) * 100)
-      realtimeResult.stage = result.stage
-
-      if (!result.success) {
-        throw new Error(result.stage)
+    for (const file of result.files || []) {
+      const normalized = await normalizeBundleFile(file)
+      if (!normalized) {
+        continue
       }
+      Object.assign(onlineFilesState[normalized.kind], normalized, {
+        isActive: Boolean(normalized.fileName),
+        percent: 0,
+      })
     }
 
-    realtimeResult.stage = "实时升级完成"
-    ElMessage.success("实时升级完成")
+    if (onlineBundle.computerName) {
+      deviceStore.setModel(onlineBundle.computerName)
+    }
+
+    const loadedCount = kindOrder.filter((kind) => onlineFilesState[kind].fileName).length
+    if (!loadedCount) {
+      appendLogs(["未找到可用在线文件"])
+      notifyError("未找到可用在线文件")
+      return
+    }
+
+    appendLogs([`在线资源加载成功，共 ${loadedCount} 个文件`])
+    notifySuccess("在线资源加载成功")
   } catch (error) {
-    realtimeResult.stage = "实时升级失败"
-    ElMessage.error(String(error))
+    notifyError(error)
   } finally {
-    realtimeLoading.value = false
+    onlineBundleLoading.value = false
   }
 }
 
-async function runOfflinePrepare() {
-  offlineLoading.value = true
-  Object.assign(offlineResult, {
-    progress: 0,
-    stage: "准备中",
-    logs: [],
-  })
+function toggleOnlineItem(kind) {
+  if (!onlineFilesState[kind].fileName) {
+    return
+  }
+  onlineFilesState[kind].isActive = !onlineFilesState[kind].isActive
+}
+
+function toggleLocalItem(kind) {
+  if (!localFiles[kind].fileName) {
+    return
+  }
+  localFiles[kind].isActive = !localFiles[kind].isActive
+}
+
+function getFileStateLabel(file) {
+  if (!file?.fileName) {
+    return t("software.local.fileState.empty")
+  }
+  return file.isActive ? t("software.local.fileState.selected") : t("software.local.fileState.pending")
+}
+
+function getSourceMeta(sourceUrl) {
+  if (!sourceUrl) {
+    return t("software.local.source.onlineBundle")
+  }
 
   try {
-    const files = await collectFiles(offlineFiles)
-    if (files.length === 0) {
-      throw new Error("请至少选择一个离线烧录文件")
-    }
-
-    const result = await prepareOfflineUpgrade({
-      ...offlineForm,
-      bootFileType: getResolvedFileType(offlineFiles.boot),
-      appFileType: getResolvedFileType(offlineFiles.app),
-      uiFileType: getResolvedFileType(offlineFiles.ui),
-      configFileType: getResolvedFileType(offlineFiles.config),
-      files,
-    })
-    Object.assign(offlineResult, result)
-    ElMessage[result.success ? "success" : "warning"](result.stage)
-  } catch (error) {
-    offlineResult.stage = "离线烧录失败"
-    ElMessage.error(String(error))
-  } finally {
-    offlineLoading.value = false
+    return new URL(sourceUrl).hostname || sourceUrl
+  } catch {
+    return sourceUrl
   }
 }
 
-async function collectFiles(container) {
-  const result = []
-
-  for (const item of FILE_KIND_OPTIONS) {
-    const current = container[item.value]
-    if (!current) {
-      continue
-    }
-
-    if (item.value === "config") {
-      result.push({
-        kind: "config",
-        fileName: current.fileName,
-        data: current.data,
-      })
-      continue
-    }
-
-    result.push({
-      kind: item.value,
-      fileName: current.name,
-      data: await fileToBytes(current),
-    })
-  }
-
-  return result
+function setLocalFileInput(kind, element) {
+  localInputs[kind] = element
 }
 
-async function onUploadChange(event, container, key) {
-  const [file] = event.target.files || []
+function openLocalFile(kind) {
+  localInputs[kind]?.click()
+}
+
+async function handleLocalFileChange(event, kind) {
+  const file = event?.target?.files?.[0]
+  event.target.value = ""
   if (!file) {
-    container[key] = null
     return
   }
 
   try {
-    if (key === "config") {
-      container.config = await prepareMeterConfigUpgradeFile(file)
-      ElMessage.success("配置文件解析成功")
-    } else {
-      container[key] = file
-    }
+    const prepared = await buildLocalFileEntry(file, kind)
+    Object.assign(localFiles[kind], prepared, {
+      isActive: true,
+      percent: 0,
+    })
   } catch (error) {
-    container[key] = null
-    ElMessage.error(String(error))
+    notifyError(error)
+  }
+}
+
+function resetLocalFile(kind) {
+  Object.assign(localFiles[kind], createFileState(kind))
+}
+
+async function handleOnlineSync() {
+  await runSync(Object.values(onlineFilesState).filter((item) => item.isActive), onlineFilesState, "在线获取")
+}
+
+async function handleLocalSync() {
+  await runSync(Object.values(localFiles).filter((item) => item.isActive), localFiles, t("software.local.source.localFile"))
+}
+
+async function handleOnlineUpgrade() {
+  await runUpgrade(Object.values(onlineFilesState).filter((item) => item.isActive), onlineFilesState, "在线获取")
+}
+
+async function handleLocalUpgrade() {
+  await runUpgrade(Object.values(localFiles).filter((item) => item.isActive), localFiles, t("software.local.source.localFile"))
+}
+
+async function handleSingleLocalUpgrade(kind) {
+  const file = localFiles[kind]
+  if (!file?.fileName) {
+    notifyError(t("software.local.errors.selectFileFirst"))
+    return
+  }
+  if (!sharedCqCode.value) {
+    notifyError("请先在左侧连接设备面板填写 CQ 配置串")
+    return
+  }
+
+  file.isActive = true
+  await runUpgrade([file], localFiles, t("software.local.source.localFileWithLabel", { label: file.label }))
+}
+
+async function runSync(selectedFiles, groupState, sourceLabel) {
+  if (!selectedFiles.length) {
+    notifyError(t("software.local.errors.selectFileFirst"))
+    return
+  }
+
+  currentLogKinds = selectedFiles.map((item) => item.kind)
+  syncLoading.value = true
+  resetProgress(groupState)
+  operationState.stage = t("software.local.sync.inProgress")
+  operationState.logs = [t("software.local.sync.started", { source: sourceLabel })]
+  appendLogs([t("software.local.sync.started", { source: sourceLabel })], currentLogKinds)
+
+  try {
+    const files = await toUpgradeFiles(selectedFiles)
+    const commType = getUpgradeCommType()
+    const result = await prepareOfflineUpgrade({
+      model: onlineBundle.computerName || deviceStore.currentModel || "UniMaster",
+      powerVoltage: 0xff,
+      commType,
+      bootFileType: 0xff,
+      appFileType: 0xff,
+      uiFileType: 0xff,
+      configFileType: 0xff,
+      configCommType: commType === 0x02 ? 2 : 1,
+      configBaudCode: Number(deviceStore.meterBaudCode ?? 0x0b),
+      configFrameType: commType === 0x02 ? Number(deviceStore.meterFrameType ?? 0) : 0,
+      uiVersion: "",
+      files,
+    })
+
+    setSelectedProgress(groupState, 100)
+    appendLogs(result.logs || [], currentLogKinds)
+    operationState.stage = result.stage || t("software.local.sync.completed")
+    notifySuccess(result.stage || t("software.local.sync.completed"))
+  } catch (error) {
+    operationState.stage = t("software.local.sync.failed")
+    appendLogs([String(error)], currentLogKinds)
+    notifyError(error)
   } finally {
-    event.target.value = ""
+    syncLoading.value = false
   }
 }
 
-function getUploadedName(entry) {
-  if (!entry) {
-    return "未选择"
+async function runUpgrade(selectedFiles, groupState, sourceLabel) {
+  if (!selectedFiles.length) {
+    notifyError(t("software.local.errors.selectFileFirst"))
+    return
   }
-  return entry.fileName || entry.name || "未命名文件"
+
+  currentLogKinds = selectedFiles.map((item) => item.kind)
+  upgradeLoading.value = true
+  deviceStore.setUpgradeInProgress(true)
+  currentUpgradeGroup = groupState
+  resetProgress(groupState)
+  operationState.stage = t("software.local.upgrade.inProgress")
+  operationState.logs = [t("software.local.upgrade.started", { source: sourceLabel })]
+  appendLogs([t("software.local.upgrade.started", { source: sourceLabel })], currentLogKinds)
+
+  try {
+    const files = await toUpgradeFiles(selectedFiles)
+    files.forEach((file) => {
+      const request = buildRealtimeInitRequest(file)
+      appendLogs([`使用 CQ 配置：${request.cqCode}`], [file.kind])
+    })
+
+    for (const [index, file] of files.entries()) {
+      const result = await performRealtimeUpgrade({
+        init: buildRealtimeInitRequest(file),
+        files: [file],
+      })
+
+      if (result.success) {
+        setProgressForKind(groupState, file.kind, 100)
+      }
+      operationState.stage = result.stage || t("software.local.upgrade.inProgress")
+
+      if (!result.success) {
+        throw new Error(result.stage || t("software.local.upgrade.fileFailed", { fileName: file.fileName }))
+      }
+
+      if (index === files.length - 1) {
+        operationState.stage = t("software.local.upgrade.completed")
+      }
+    }
+
+    notifySuccess(operationState.stage || t("software.local.upgrade.completed"))
+  } catch (error) {
+    operationState.stage = t("software.local.upgrade.failed")
+    appendLogs([String(error)], currentLogKinds)
+    notifyError(error)
+  } finally {
+    currentUpgradeGroup = null
+    deviceStore.setUpgradeInProgress(false)
+    upgradeLoading.value = false
+  }
 }
 
-function getConfigSummary(entry) {
-  if (!entry) {
-    return "支持 JSON / INI，导入后会编码为仪表参数块。"
+async function toUpgradeFiles(selectedFiles) {
+  const result = []
+  for (const item of selectedFiles) {
+    result.push({
+      kind: item.kind,
+      fileName: item.fileName,
+      data: Array.isArray(item.data) ? item.data : [],
+    })
   }
-  return `已解析 ${entry.data.length} 字节，可直接参与烧录。`
+  return result
 }
 
-function getResolvedFileType(entry) {
-  if (!entry) {
-    return 0xff
+async function normalizeBundleFile(file) {
+  if (!file?.kind || !kindOrder.includes(file.kind)) {
+    return null
   }
-  return getFileTypeCode(entry.fileName || entry.name || "")
+
+  if (file.kind === "config") {
+    const prepared = await prepareMeterConfigUpgradeFile({
+      name: file.fileName || "config.json",
+      text: async () => String(file.text || ""),
+    })
+    return {
+      kind: file.kind,
+      label: kindLabelMap[file.kind],
+      fileName: prepared.fileName || file.fileName || "config.json",
+      sourceUrl: file.sourceUrl || "",
+      data: prepared.data,
+    }
+  }
+
+  return {
+    kind: file.kind,
+    label: kindLabelMap[file.kind],
+    fileName: file.fileName || `${file.kind}.bin`,
+    sourceUrl: file.sourceUrl || "",
+    data: Array.isArray(file.bytes) ? file.bytes : [],
+  }
 }
 
-function getFirstSelectedKind(container) {
-  return FILE_KIND_OPTIONS.find((item) => container[item.value])?.value || "app"
+async function buildLocalFileEntry(file, kind) {
+  if (kind === "config") {
+    const prepared = await prepareMeterConfigUpgradeFile(file)
+    return {
+      kind,
+      label: kindLabelMap[kind],
+      fileName: prepared.fileName || file.name,
+      sourceUrl: "",
+      data: prepared.data,
+    }
+  }
+
+  return {
+    kind,
+    label: kindLabelMap[kind],
+    fileName: file.name,
+    sourceUrl: "",
+    data: await fileToBytes(file),
+  }
+}
+
+function resetFileGroup(group) {
+  kindOrder.forEach((kind) => {
+    Object.assign(group[kind], createFileState(kind))
+  })
+}
+
+function resetProgress(group) {
+  kindOrder.forEach((kind) => {
+    if (group[kind]) {
+      group[kind].percent = group[kind].isActive ? 0 : group[kind].percent
+    }
+  })
 }
 
 function getRealtimeBurnType(kind) {
@@ -728,307 +588,1214 @@ function getRealtimeBurnType(kind) {
   }
 }
 
-function appendUpgradeLog(target, message) {
-  target.logs.push(message)
+function setProgressForKind(group, kind, value) {
+  if (group[kind]) {
+    group[kind].percent = value
+  }
 }
 
-function scrollLogToBottom(element) {
-  if (!element) {
+function setSelectedProgress(group, value) {
+  kindOrder.forEach((kind) => {
+    if (group[kind]?.isActive) {
+      group[kind].percent = value
+    }
+  })
+}
+
+function applyUpgradeProgress(payload) {
+  if (!payload) {
     return
   }
-  element.scrollTop = element.scrollHeight
+
+  operationState.stage = payload.stage || operationState.stage
+
+  if (currentUpgradeGroup && payload.kind) {
+    setProgressForKind(
+      currentUpgradeGroup,
+      payload.kind,
+      Number(payload.fileProgress ?? payload.progress ?? currentUpgradeGroup[payload.kind]?.percent ?? 0),
+    )
+  }
+
+  if (payload.log) {
+    appendLogs([payload.log], payload.kind ? [payload.kind] : currentLogKinds)
+  }
+}
+
+function appendLogs(logs, targetKinds = []) {
+  operationState.logs.push(...logs)
+  nextTick(() => {
+    targetKinds
+      .filter((kind) => Array.isArray(terminalLogs[kind]))
+      .forEach((kind) => {
+        terminalLogs[kind].push(...logs)
+        scrollTerminalToBottom(kind)
+      })
+  })
+}
+
+function setTerminalRef(kind, element) {
+  terminalRefs[kind] = element
+}
+
+function setTerminalBodyRef(kind, element) {
+  terminalBodyRefs[kind] = element
+}
+
+function scrollTerminalToBottom(kind, retry = 0) {
+  const lastIndex = terminalLogs[kind].length - 1
+  const virtualScroll = terminalRefs[kind]
+  const body = terminalBodyRefs[kind]
+
+  if (virtualScroll?.scrollTo && lastIndex >= 0) {
+    virtualScroll.scrollTo(lastIndex, "end")
+  }
+
+  const applyDomScroll = () => {
+    const scrollElement = body?.querySelector?.(".q-virtual-scroll") || virtualScroll?.$el || body
+    if (scrollElement) {
+      scrollElement.scrollTop = scrollElement.scrollHeight
+    }
+
+    if (retry < 2) {
+      requestAnimationFrame(() => scrollTerminalToBottom(kind, retry + 1))
+    }
+  }
+
+  requestAnimationFrame(applyDomScroll)
+}
+
+function clearLocalLogs(kind) {
+  if (Array.isArray(terminalLogs[kind])) {
+    terminalLogs[kind] = []
+  }
+}
+
+function clearLogs() {
+  operationState.logs = []
+  Object.keys(terminalLogs).forEach((kind) => {
+    if (Array.isArray(terminalLogs[kind])) {
+      terminalLogs[kind] = []
+    }
+  })
 }
 </script>
 
 <style scoped lang="scss">
-.software-page {
+.program-burning-page {
+  --software-accent: var(--dt-accent);
+  --software-accent-soft: var(--dt-brand-primary-soft);
+  --software-accent-strong: color-mix(in srgb, var(--dt-accent) 20%, transparent);
+  --software-panel-edge: var(--dt-border);
+  --software-panel-shadow: var(--dt-shadow-panel);
+  --software-glow: radial-gradient(circle at top right, color-mix(in srgb, var(--dt-accent) 16%, transparent), transparent 34%);
+  --software-page-bg: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--dt-bg-panel-strong) 58%, transparent),
+    color-mix(in srgb, var(--dt-bg-panel-soft) 18%, transparent)
+  );
+  --software-workspace-bg: var(--dt-gloss-surface);
+  --software-card-bg: var(--dt-gloss-surface);
+  --software-card-bg-soft: var(--dt-gloss-surface-soft);
+  --software-card-bg-ghost: var(--dt-gloss-surface-ghost);
+  --software-card-bg-active: var(--dt-gloss-surface-ghost);
+  --software-dropzone-bg: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--dt-bg-panel) 92%, white 8%),
+    color-mix(in srgb, var(--dt-bg-panel-soft) 94%, transparent)
+  );
+  --software-dropzone-bg-active: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--dt-bg-panel) 88%, var(--dt-accent) 12%),
+    color-mix(in srgb, var(--dt-bg-panel-soft) 84%, var(--dt-accent) 16%)
+  );
+  --software-chip-bg: color-mix(in srgb, var(--dt-text-primary) 6%, transparent);
+  --software-chip-text: var(--dt-text-secondary);
+  --software-tag-bg: color-mix(in srgb, var(--dt-accent) 12%, transparent);
+  --software-tag-text: var(--dt-accent);
+  --software-icon-bg: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--dt-accent) 14%, transparent),
+    color-mix(in srgb, var(--dt-accent) 22%, transparent)
+  );
+  --software-icon-text: var(--dt-accent);
+  --software-progress-bg: color-mix(in srgb, var(--dt-text-secondary) 18%, transparent);
+  --software-dropzone-border: color-mix(in srgb, var(--dt-border) 80%, var(--dt-accent) 20%);
+  --software-card-border: color-mix(in srgb, var(--dt-border) 86%, transparent);
+  --software-terminal-border: color-mix(in srgb, var(--dt-border) 72%, var(--dt-accent) 28%);
+  --software-terminal-bg:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--dt-bg-panel) 94%, #08111d 6%),
+      color-mix(in srgb, var(--dt-bg-panel-soft) 90%, #102036 10%)
+    ),
+    radial-gradient(circle at top right, color-mix(in srgb, var(--dt-accent) 14%, transparent), transparent 36%);
+  --software-terminal-text: color-mix(in srgb, var(--dt-text-primary) 86%, #d9e6f4 14%);
+  --software-terminal-muted: color-mix(in srgb, var(--dt-text-secondary) 78%, #9cb3cd 22%);
   display: flex;
   flex-direction: column;
   gap: 16px;
+  min-height: 100%;
   height: 100%;
-  min-height: 0;
-}
-
-.software-head,
-.page-card {
-  background: #fff;
-  border: 1px solid #dce5f0;
-  border-radius: var(--dt-radius-panel);
-  box-shadow: var(--dt-shadow-panel);
-}
-
-.software-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 18px 20px;
-}
-
-.software-head h2,
-.page-card h3,
-.page-card h4 {
-  margin: 0 0 8px;
-  color: #1e3354;
-}
-
-.software-head h2 {
-  font-size: 18px;
-}
-
-.software-head p,
-.section-toolbar p,
-.upload-card small {
-  margin: 0;
-  color: #6f7c94;
-  font-size: 14px;
-  line-height: 1.65;
-}
-
-.software-tabbar {
-  display: flex;
-  gap: 10px;
-  padding: 2px 2px 0;
-}
-
-.software-tab {
-  min-height: 38px;
-  padding: 0 16px;
-  border: 1px solid #d8e2ee;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.82);
-  color: #55657d;
-  font: inherit;
-  font-size: 14px;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.software-tab--active {
-  border-color: #b8d2f8;
-  background: #eaf3ff;
-  color: #1668dc;
-}
-
-.grid-two {
-  display: grid;
-  grid-template-columns: 1.1fr 0.9fr;
-  gap: 16px;
-  min-height: 0;
-  flex: 1;
-}
-
-.page-card {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  padding: 20px;
-  overflow: auto;
-}
-
-.page-card--log {
+  padding: 12px;
+  box-sizing: border-box;
   overflow: hidden;
 }
 
-.section-toolbar {
+.program-burning-page--local {
+  overflow: hidden;
+}
+
+.workspace-panel__head h3,
+.feature-panel__head h3,
+.action-strip__copy h3,
+.log-panel__head strong {
+  margin: 0;
+  color: var(--dt-text-primary);
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.workspace-panel__head p,
+.feature-panel__head p {
+  margin: 6px 0 0;
+  color: var(--dt-text-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.summary-card,
+.status-card {
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px 18px;
+  border: 1px solid var(--software-card-border);
+  border-radius: 16px;
+  background: var(--software-card-bg);
+  box-shadow: var(--dt-gloss-inset);
+}
+
+.summary-card span,
+.status-card span {
+  color: var(--dt-text-secondary);
+  font-size: 12px;
+}
+
+.summary-card strong,
+.status-card strong {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--dt-text-primary);
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.workspace-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 16px;
+  flex: 0 0 auto;
+  border: 1px solid var(--software-panel-edge);
+  border-radius: 18px;
+  background: var(--software-workspace-bg), var(--software-glow);
+}
+
+.workspace-panel--local {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.program-burning-page--local .workspace-panel {
+  gap: 12px;
+}
+
+.workspace-panel__head {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 0;
+  padding: 0;
+}
+
+.source-tabs {
+  min-width: 220px;
+}
+
+.source-tabs :deep(.q-tabs__content) {
+  gap: 20px;
+}
+
+.source-tabs :deep(.q-tab) {
+  min-height: 40px;
+  padding: 0;
+  color: var(--dt-text-muted);
+  font-weight: 700;
+  transition: none;
+}
+
+.source-tabs :deep(.q-tab__label) {
+  font-size: 16px;
+  font-weight: 800;
+}
+
+.source-tabs :deep(.q-tab:hover) {
+  color: var(--dt-text-secondary);
+}
+
+.source-tabs :deep(.q-tab--active) {
+  color: var(--dt-accent);
+}
+
+.source-tabs :deep(.q-tab .q-focus-helper),
+.source-tabs :deep(.q-tab:hover .q-focus-helper) {
+  opacity: 0 !important;
+  background: transparent !important;
+}
+
+.source-tabs :deep(.q-tabs__arrow) {
+  display: none;
+}
+
+.source-tabs :deep(.q-tab__indicator) {
+  height: 3px;
+  border-radius: 999px;
+}
+
+.workspace-panel__content {
+  display: flex;
+  flex-direction: column;
   gap: 16px;
-  margin-bottom: 16px;
 }
 
-.section-toolbar--compact {
-  margin-bottom: 12px;
+.workspace-panel__content--local {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
 }
 
-.section-toolbar h3 {
+.local-section-head {
+  flex: 0 0 auto;
+  padding: 2px 2px 0;
+}
+
+.workspace-panel__content--local .feature-panel {
+  flex: 1 1 auto;
+  min-height: 0;
+  gap: 14px;
+  padding: 16px;
+}
+
+.workspace-panel__content--local .feature-panel__head,
+.local-section-head .feature-panel__head {
+  padding-bottom: 2px;
+}
+
+.workspace-panel__content--local .feature-panel__head h3,
+.local-section-head .feature-panel__head h3 {
   font-size: 16px;
 }
 
-.version-summary {
+.workspace-panel__content--local .feature-panel__head p,
+.local-section-head .feature-panel__head p {
+  font-size: 12px;
+}
+
+.software-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px;
-  margin-bottom: 18px;
+  gap: 16px;
 }
 
-.summary-item {
-  padding: 14px 16px;
-  border: 1px solid #e2e9f3;
-  border-radius: 12px;
-  background: #f6f9fd;
+.software-grid--online {
+  grid-template-columns: minmax(340px, 0.84fr) minmax(0, 1.16fr);
 }
 
-.summary-item span {
-  display: block;
-  margin-bottom: 6px;
-  color: #7d8aa0;
-  font-size: 13px;
+.feature-panel,
+.files-panel,
+.status-panel,
+.log-panel {
+  padding: 18px;
+  border-radius: 18px;
 }
 
-.summary-item strong {
-  color: #1d3559;
-  font-size: 18px;
-}
-
-.actions {
+.feature-panel {
   display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  margin-top: 16px;
+  flex-direction: column;
+  gap: 16px;
 }
 
-.flag-panel {
-  margin-top: 20px;
-  padding-top: 18px;
-  border-top: 1px solid #e7edf5;
+.workspace-panel__content--local .feature-panel {
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
-.flag-head {
+.feature-panel__head {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 6px;
 }
 
-.flag-write {
-  display: grid;
-  grid-template-columns: 110px minmax(220px, 1fr) 140px auto;
-  gap: 10px;
-  align-items: end;
-  margin-top: 14px;
-}
-
-.flag-write__field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  min-width: 0;
-}
-
-.flag-write__field--switch {
-  align-items: flex-start;
-}
-
-.flag-write__label {
-  color: #6d7b91;
+.panel-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 12px;
+  border-radius: 999px;
+  background: var(--software-tag-bg);
+  color: color-mix(in srgb, var(--software-tag-text) 74%, var(--dt-text-secondary) 26%);
   font-size: 12px;
-  font-weight: 700;
-  line-height: 1.4;
+  font-weight: 800;
+  white-space: nowrap;
 }
 
-.flag-write__actions {
+.panel-badge--soft {
+  background: color-mix(in srgb, var(--dt-bg-chip) 72%, transparent);
+  border: 1px solid var(--software-card-border);
+}
+
+.loader-form {
   display: flex;
   align-items: end;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid var(--software-card-border);
+  border-radius: 16px;
+  background: var(--software-card-bg-soft);
 }
 
-.flag-write :deep(.el-input-number) {
-  width: 110px;
+.field-grow {
+  flex: 1;
 }
 
-.flag-write :deep(.el-input) {
-  min-width: 0;
+.field-label {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--dt-text-secondary);
+  font-size: 13px;
+  font-weight: 700;
 }
 
-.form-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0 16px;
-}
-
-.upload-grid {
+.summary-grid,
+.status-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
-  margin-top: 10px;
 }
 
-.upload-grid--wide {
+.status-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
-.upload-card {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 14px;
-  border: 1px dashed #cdd7e6;
-  border-radius: 12px;
-  background: #fbfcfe;
+.status-card--wide {
+  grid-column: 1 / -1;
 }
 
-.upload-card input {
+.file-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.file-grid--local {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-auto-rows: minmax(0, 1fr);
+  align-content: stretch;
+  align-items: stretch;
+}
+
+.file-card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
   width: 100%;
+  min-height: 216px;
+  padding: 18px;
+  border: 1px solid var(--software-card-border);
+  border-radius: var(--dt-radius-subtle);
+  background: var(--software-card-bg), var(--software-glow);
+  box-sizing: border-box;
+  text-align: left;
+  color: inherit;
+  transition: border-color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
 }
 
-.upload-card__head {
+.file-card--local {
+  min-height: 0;
+  height: 100%;
+  padding: 16px 18px 16px;
+  gap: 14px;
+  border-color: color-mix(in srgb, var(--dt-border-strong) 78%, transparent);
+  background: var(--software-card-bg-soft), var(--software-glow);
+  box-shadow: var(--dt-gloss-inset), var(--dt-shadow-panel);
+}
+
+.file-card:not(.file-card--local) {
+  cursor: pointer;
+}
+
+.file-card:hover {
+  border-color: color-mix(in srgb, var(--dt-accent) 28%, var(--dt-border) 72%);
+  box-shadow: var(--dt-shadow-float);
+}
+
+.file-card--active {
+  border-color: color-mix(in srgb, var(--dt-accent) 44%, var(--dt-border) 56%);
+  background: var(--software-card-bg-active), var(--software-glow);
+  box-shadow: var(--dt-gloss-inset), 0 20px 36px color-mix(in srgb, var(--dt-accent) 14%, transparent);
+}
+
+.file-card--local.file-card--active {
+  border-color: color-mix(in srgb, var(--dt-accent) 52%, var(--dt-border-strong) 48%);
+  background: var(--software-card-bg-active), var(--software-glow);
+}
+
+.file-card__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.file-card__head-main {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+}
+
+.file-card__labels {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  align-items: center;
+}
+
+.file-card__dropzone {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 72px;
+  padding: 14px 16px;
+  border: 1px dashed var(--software-dropzone-border);
+  border-radius: var(--dt-radius-subtle);
+  background: var(--software-dropzone-bg);
+}
+
+.file-card--active .file-card__dropzone {
+  border-color: color-mix(in srgb, var(--dt-accent) 58%, var(--dt-border) 42%);
+  background: var(--software-dropzone-bg-active);
+}
+
+.file-card__dropzone-icon {
+  display: grid;
+  place-items: center;
+  width: 50px;
+  height: 50px;
+  border-radius: var(--dt-radius-subtle);
+  background: var(--software-icon-bg);
+  color: var(--software-icon-text);
+  box-shadow: var(--dt-gloss-inset);
+  flex: 0 0 auto;
+}
+
+.file-card__dropzone-copy {
+  min-width: 0;
+}
+
+.file-card__dropzone-copy strong {
+  display: block;
+  color: var(--dt-text-primary);
+  font-size: 14px;
+  font-weight: 800;
+  line-height: 1.35;
+}
+
+.file-card__dropzone-copy p {
+  margin: 6px 0 0;
+  color: var(--dt-text-secondary);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.file-card__tag {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: var(--software-tag-bg);
+  color: var(--software-tag-text);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.file-card__format {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 9px;
+  border-radius: 999px;
+  background: var(--software-chip-bg);
+  color: var(--software-chip-text);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.file-state-chip,
+.log-stage {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--dt-border) 72%, transparent);
+  background: color-mix(in srgb, var(--dt-bg-chip) 68%, transparent);
+  color: var(--software-chip-text);
+  font-size: 11px;
+  font-weight: 800;
+  white-space: nowrap;
+  box-shadow: none;
+  margin-left: auto;
+}
+
+.file-state-chip--active {
+  border-color: color-mix(in srgb, var(--dt-accent) 22%, transparent);
+  background: color-mix(in srgb, var(--dt-accent) 12%, transparent);
+  color: var(--dt-accent);
+}
+
+.file-card__meta {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
 }
 
-.upload-card__head span {
-  font-weight: 700;
-  color: #20385a;
+.file-card__meta--inline {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  color: var(--dt-text-secondary);
 }
 
-.upload-card strong {
-  color: #1d3559;
+.file-card__meta span {
+  color: var(--dt-text-secondary);
+  font-size: 12px;
+}
+
+.file-card__meta p {
+  margin: 0;
+  color: var(--dt-text-primary);
   font-size: 13px;
   line-height: 1.6;
   word-break: break-all;
 }
 
-.upload-card__summary {
-  margin: 0;
-  color: #5f6f88;
+.file-card__meta--inline p {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  word-break: normal;
+}
+
+.file-card__progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--dt-text-secondary);
   font-size: 12px;
-  line-height: 1.6;
+  margin-top: auto;
 }
 
-.dark-box {
-  min-height: 320px;
-  margin-top: 12px;
-  padding: 16px;
-  border-radius: 12px;
-  background: linear-gradient(180deg, #0f1828, #162235);
-  border: 1px solid rgba(99, 126, 175, 0.24);
-  color: #d9ebff;
-  line-height: 1.9;
-  white-space: pre-wrap;
-  overflow: auto;
+.file-card--local .file-card__progress {
+  margin-top: 2px;
 }
 
-.dark-box--fill {
+.file-card__progress :deep(.q-linear-progress) {
   flex: 1;
+  border-radius: 999px;
+  background: var(--software-progress-bg);
+}
+
+.file-terminal {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  gap: 8px;
+}
+
+.file-terminal__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.file-terminal__head strong {
+  color: var(--dt-text-secondary);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.file-terminal__body {
+  flex: 1 1 auto;
+  min-height: 220px;
+  overflow: hidden;
+  padding: 0;
+  border: 1px solid var(--software-terminal-border);
+  border-radius: 10px;
+  background: var(--software-terminal-bg);
+  color: var(--software-terminal-text);
+  box-sizing: border-box;
+}
+
+.file-terminal__scroll {
+  height: 100%;
+  min-height: 220px;
+  padding: 16px 18px;
+  font-family: "SFMono-Regular", "Menlo", "Monaco", monospace;
+  font-size: 12px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+  box-sizing: border-box;
+}
+
+.file-terminal__line {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 1px 0;
+}
+
+.file-terminal__index {
+  min-width: 24px;
+  color: var(--software-terminal-muted);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.file-terminal__empty {
+  color: var(--software-terminal-muted);
+  padding: 16px 18px;
+  line-height: 1.7;
+}
+
+.file-card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 12px;
+  padding-top: 4px;
+}
+
+.file-card--local .file-card__actions {
+  gap: 12px;
+  padding-top: 0;
+  margin-top: auto;
+}
+
+.file-card__actions > :deep(.q-btn) {
+  min-height: 38px;
+  min-width: 94px;
+  padding: 0 18px;
+  border-radius: var(--dt-radius-button);
+  font-weight: 800;
+}
+
+.file-card--local .file-card__actions > :deep(.q-btn) {
+  min-height: 40px;
+  min-width: 108px;
+  padding: 0 18px;
+}
+
+.hidden-input {
+  display: none;
+}
+
+.action-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 16px 18px;
+  border: 1px solid var(--software-card-border);
+  border-radius: 18px;
+  background: var(--software-card-bg-soft), radial-gradient(circle at left center, var(--software-accent-soft), transparent 34%);
+}
+
+.workspace-panel__content--local .action-strip {
+  flex: 0 0 auto;
+  margin-top: auto;
+}
+
+.action-strip__copy {
+  flex: 0 0 auto;
+  display: none;
+}
+
+.action-strip__actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.action-strip__actions > :deep(.q-btn) {
+  min-height: 40px;
+  min-width: 116px;
+  border-radius: var(--dt-radius-button);
+  font-weight: 800;
+}
+
+.empty-state,
+.log-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 220px;
+  border: 1px dashed color-mix(in srgb, var(--dt-border) 80%, var(--dt-accent) 20%);
+  border-radius: 18px;
+  color: var(--dt-text-secondary);
+  background: var(--software-card-bg-ghost);
+}
+
+.software-bottom-grid {
+  display: grid;
+  grid-template-columns: minmax(320px, 0.76fr) minmax(0, 1.24fr);
+  gap: 16px;
+  flex: 0 0 auto;
   min-height: 0;
 }
 
-@media (max-width: 1200px) {
-  .grid-two {
-    grid-template-columns: 1fr;
+.status-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-height: 0;
+}
+
+.log-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 280px;
+}
+
+.log-panel__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.log-panel__body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex: 1;
+  overflow: auto;
+  margin-top: 8px;
+  padding: 16px;
+  border: 1px solid rgba(82, 107, 145, 0.34);
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, rgba(11, 20, 34, 0.98), rgba(17, 31, 50, 0.98)),
+    radial-gradient(circle at top right, rgba(59, 130, 246, 0.12), transparent 34%);
+  color: #d9e6f4;
+  font-size: 13px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.log-line {
+  display: flex;
+  gap: 12px;
+}
+
+.log-line__index {
+  min-width: 26px;
+  color: rgba(217, 230, 244, 0.54);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 1180px) {
+  .file-grid--local,
+  .software-bottom-grid {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
-@media (max-width: 960px) {
-  .software-head,
-  .section-toolbar {
+:global(html[data-theme="dark"]) .program-burning-page,
+:global(html.theme-dark) .program-burning-page,
+:global(body.body--dark) .program-burning-page,
+:global(body.theme-dark) .program-burning-page,
+:global(body[data-theme="dark"]) .program-burning-page {
+  --software-panel-edge: rgba(255, 255, 255, 0.2);
+  --software-panel-shadow: 0 26px 56px rgba(0, 0, 0, 0.36);
+  --software-glow: radial-gradient(circle at top right, rgba(98, 142, 255, 0.22), transparent 40%);
+  --software-page-bg: linear-gradient(180deg, rgba(9, 8, 15, 0.92), rgba(13, 12, 22, 0.84));
+  --software-workspace-bg: linear-gradient(180deg, rgba(20, 17, 30, 0.98), rgba(13, 11, 22, 0.98));
+  --software-card-bg: linear-gradient(180deg, rgba(31, 26, 44, 0.98), rgba(22, 18, 32, 0.96));
+  --software-card-bg-soft: linear-gradient(180deg, rgba(38, 32, 55, 0.98), rgba(25, 21, 37, 0.96));
+  --software-card-bg-ghost: linear-gradient(180deg, rgba(28, 24, 41, 0.9), rgba(19, 16, 28, 0.86));
+  --software-card-bg-active: linear-gradient(180deg, rgba(35, 49, 82, 0.98), rgba(23, 31, 53, 0.96));
+  --software-dropzone-bg: linear-gradient(180deg, rgba(21, 28, 46, 0.94), rgba(15, 21, 35, 0.9));
+  --software-dropzone-bg-active: linear-gradient(180deg, rgba(29, 49, 84, 0.98), rgba(20, 35, 63, 0.94));
+  --software-chip-bg: rgba(255, 255, 255, 0.1);
+  --software-chip-text: #d4d0e3;
+  --software-tag-bg: rgba(92, 145, 255, 0.22);
+  --software-tag-text: #9fc3ff;
+  --software-icon-bg: linear-gradient(135deg, rgba(90, 143, 255, 0.26), rgba(67, 113, 224, 0.36));
+  --software-icon-text: #9fc3ff;
+  --software-progress-bg: rgba(255, 255, 255, 0.16);
+  --software-dropzone-border: rgba(255, 255, 255, 0.28);
+  --software-card-border: rgba(255, 255, 255, 0.18);
+  --software-terminal-border: rgba(110, 145, 201, 0.34);
+  --software-terminal-bg:
+    linear-gradient(180deg, rgba(11, 20, 34, 0.98), rgba(17, 31, 50, 0.98)),
+    radial-gradient(circle at top right, rgba(59, 130, 246, 0.12), transparent 34%);
+  --software-terminal-text: #d9e6f4;
+  --software-terminal-muted: rgba(217, 230, 244, 0.6);
+  background: var(--software-page-bg), transparent;
+}
+
+:global(html[data-theme="dark"]) .program-burning-page .file-state-chip,
+:global(html.theme-dark) .program-burning-page .file-state-chip,
+:global(body.body--dark) .program-burning-page .file-state-chip,
+:global(body.theme-dark) .program-burning-page .file-state-chip,
+:global(body[data-theme="dark"]) .program-burning-page .file-state-chip {
+  border-color: rgba(144, 177, 229, 0.18);
+  background: rgba(255, 255, 255, 0.08);
+  color: #d4dceb;
+}
+
+:global(html[data-theme="dark"]) .program-burning-page .file-state-chip--active,
+:global(html.theme-dark) .program-burning-page .file-state-chip--active,
+:global(body.body--dark) .program-burning-page .file-state-chip--active,
+:global(body.theme-dark) .program-burning-page .file-state-chip--active,
+:global(body[data-theme="dark"]) .program-burning-page .file-state-chip--active {
+  border-color: rgba(102, 162, 255, 0.22);
+  background: rgba(59, 130, 246, 0.14);
+  color: #a8c6ff;
+}
+
+:global(html[data-theme="dark"]) .program-burning-page .summary-card,
+:global(html[data-theme="dark"]) .program-burning-page .status-card,
+:global(html[data-theme="dark"]) .program-burning-page .workspace-panel,
+:global(html[data-theme="dark"]) .program-burning-page .file-card,
+:global(html[data-theme="dark"]) .program-burning-page .file-card--local,
+:global(html[data-theme="dark"]) .program-burning-page .action-strip,
+:global(html[data-theme="dark"]) .program-burning-page .empty-state,
+:global(html[data-theme="dark"]) .program-burning-page .log-empty,
+:global(html.theme-dark) .program-burning-page .summary-card,
+:global(html.theme-dark) .program-burning-page .status-card,
+:global(html.theme-dark) .program-burning-page .workspace-panel,
+:global(html.theme-dark) .program-burning-page .file-card,
+:global(html.theme-dark) .program-burning-page .file-card--local,
+:global(html.theme-dark) .program-burning-page .action-strip,
+:global(html.theme-dark) .program-burning-page .empty-state,
+:global(html.theme-dark) .program-burning-page .log-empty,
+:global(body.body--dark) .program-burning-page .summary-card,
+:global(body.body--dark) .program-burning-page .status-card,
+:global(body.body--dark) .program-burning-page .workspace-panel,
+:global(body.body--dark) .program-burning-page .file-card,
+:global(body.body--dark) .program-burning-page .file-card--local,
+:global(body.body--dark) .program-burning-page .action-strip,
+:global(body.body--dark) .program-burning-page .empty-state,
+:global(body.body--dark) .program-burning-page .log-empty,
+:global(body.theme-dark) .program-burning-page .summary-card,
+:global(body.theme-dark) .program-burning-page .status-card,
+:global(body.theme-dark) .program-burning-page .workspace-panel,
+:global(body.theme-dark) .program-burning-page .file-card,
+:global(body.theme-dark) .program-burning-page .file-card--local,
+:global(body.theme-dark) .program-burning-page .action-strip,
+:global(body.theme-dark) .program-burning-page .empty-state,
+:global(body.theme-dark) .program-burning-page .log-empty,
+:global(body[data-theme="dark"]) .program-burning-page .summary-card,
+:global(body[data-theme="dark"]) .program-burning-page .status-card,
+:global(body[data-theme="dark"]) .program-burning-page .workspace-panel,
+:global(body[data-theme="dark"]) .program-burning-page .file-card,
+:global(body[data-theme="dark"]) .program-burning-page .file-card--local,
+:global(body[data-theme="dark"]) .program-burning-page .action-strip,
+:global(body[data-theme="dark"]) .program-burning-page .empty-state,
+:global(body[data-theme="dark"]) .program-burning-page .log-empty {
+  border-color: rgba(255, 255, 255, 0.18);
+  box-shadow: var(--dt-gloss-inset), var(--software-panel-shadow);
+}
+
+:global(html[data-theme="dark"]) .program-burning-page .summary-card,
+:global(html[data-theme="dark"]) .program-burning-page .status-card,
+:global(html[data-theme="dark"]) .program-burning-page .workspace-panel,
+:global(html.theme-dark) .program-burning-page .summary-card,
+:global(html.theme-dark) .program-burning-page .status-card,
+:global(html.theme-dark) .program-burning-page .workspace-panel,
+:global(body.body--dark) .program-burning-page .summary-card,
+:global(body.body--dark) .program-burning-page .status-card,
+:global(body.body--dark) .program-burning-page .workspace-panel,
+:global(body.theme-dark) .program-burning-page .summary-card,
+:global(body.theme-dark) .program-burning-page .status-card,
+:global(body.theme-dark) .program-burning-page .workspace-panel,
+:global(body[data-theme="dark"]) .program-burning-page .summary-card,
+:global(body[data-theme="dark"]) .program-burning-page .status-card,
+:global(body[data-theme="dark"]) .program-burning-page .workspace-panel {
+  background: var(--software-workspace-bg), var(--software-glow);
+}
+
+:global(html[data-theme="dark"]) .program-burning-page .panel-badge,
+:global(html.theme-dark) .program-burning-page .panel-badge,
+:global(body.body--dark) .program-burning-page .panel-badge,
+:global(body.theme-dark) .program-burning-page .panel-badge,
+:global(body[data-theme="dark"]) .program-burning-page .panel-badge {
+  background: rgba(110, 124, 255, 0.16);
+  color: #aeb8ff;
+}
+
+:global(html[data-theme="dark"]) .program-burning-page .panel-badge--soft,
+:global(html.theme-dark) .program-burning-page .panel-badge--soft,
+:global(body.body--dark) .program-burning-page .panel-badge--soft,
+:global(body.theme-dark) .program-burning-page .panel-badge--soft,
+:global(body[data-theme="dark"]) .program-burning-page .panel-badge--soft {
+  background: rgba(31, 25, 44, 0.82);
+  border-color: rgba(255, 255, 255, 0.18);
+  color: var(--dt-text-secondary);
+}
+
+:global(html[data-theme="dark"]) .program-burning-page .file-card,
+:global(html[data-theme="dark"]) .program-burning-page .file-card--local,
+:global(html.theme-dark) .program-burning-page .file-card,
+:global(html.theme-dark) .program-burning-page .file-card--local,
+:global(body.body--dark) .program-burning-page .file-card,
+:global(body.body--dark) .program-burning-page .file-card--local,
+:global(body.theme-dark) .program-burning-page .file-card,
+:global(body.theme-dark) .program-burning-page .file-card--local,
+:global(body[data-theme="dark"]) .program-burning-page .file-card,
+:global(body[data-theme="dark"]) .program-burning-page .file-card--local {
+  background: var(--software-card-bg), var(--software-glow);
+}
+
+:global(html[data-theme="dark"]) .program-burning-page .file-card:hover,
+:global(html.theme-dark) .program-burning-page .file-card:hover,
+:global(body.body--dark) .program-burning-page .file-card:hover,
+:global(body.theme-dark) .program-burning-page .file-card:hover,
+:global(body[data-theme="dark"]) .program-burning-page .file-card:hover {
+  border-color: rgba(124, 164, 255, 0.5);
+  box-shadow: 0 18px 34px rgba(0, 0, 0, 0.34);
+}
+
+:global(html[data-theme="dark"]) .program-burning-page .file-card--active,
+:global(html.theme-dark) .program-burning-page .file-card--active,
+:global(body.body--dark) .program-burning-page .file-card--active,
+:global(body.theme-dark) .program-burning-page .file-card--active,
+:global(body[data-theme="dark"]) .program-burning-page .file-card--active {
+  border-color: rgba(127, 173, 255, 0.66);
+  background: var(--software-card-bg-active), var(--software-glow);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 22px 42px rgba(0, 0, 0, 0.38),
+    0 0 0 1px rgba(82, 141, 255, 0.16);
+}
+
+:global(html[data-theme="dark"]) .program-burning-page .file-card__dropzone,
+:global(html.theme-dark) .program-burning-page .file-card__dropzone,
+:global(body.body--dark) .program-burning-page .file-card__dropzone,
+:global(body.theme-dark) .program-burning-page .file-card__dropzone,
+:global(body[data-theme="dark"]) .program-burning-page .file-card__dropzone {
+  border-color: var(--software-dropzone-border);
+  background: var(--software-dropzone-bg);
+}
+
+:global(html[data-theme="dark"]) .program-burning-page .file-card--active .file-card__dropzone,
+:global(html.theme-dark) .program-burning-page .file-card--active .file-card__dropzone,
+:global(body.body--dark) .program-burning-page .file-card--active .file-card__dropzone,
+:global(body.theme-dark) .program-burning-page .file-card--active .file-card__dropzone,
+:global(body[data-theme="dark"]) .program-burning-page .file-card--active .file-card__dropzone {
+  border-color: rgba(136, 183, 255, 0.78);
+  background: var(--software-dropzone-bg-active);
+}
+
+:global(html[data-theme="dark"]) .program-burning-page .file-card__dropzone-icon,
+:global(html.theme-dark) .program-burning-page .file-card__dropzone-icon,
+:global(body.body--dark) .program-burning-page .file-card__dropzone-icon,
+:global(body.theme-dark) .program-burning-page .file-card__dropzone-icon,
+:global(body[data-theme="dark"]) .program-burning-page .file-card__dropzone-icon {
+  background: var(--software-icon-bg);
+  color: var(--software-icon-text);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+:global(html[data-theme="dark"]) .program-burning-page .file-card__dropzone-copy strong,
+:global(html.theme-dark) .program-burning-page .file-card__dropzone-copy strong,
+:global(body.body--dark) .program-burning-page .file-card__dropzone-copy strong,
+:global(body.theme-dark) .program-burning-page .file-card__dropzone-copy strong,
+:global(body[data-theme="dark"]) .program-burning-page .file-card__dropzone-copy strong {
+  color: var(--dt-text-primary);
+}
+
+:global(html[data-theme="dark"]) .program-burning-page .file-card__dropzone-copy p,
+:global(html.theme-dark) .program-burning-page .file-card__dropzone-copy p,
+:global(body.body--dark) .program-burning-page .file-card__dropzone-copy p,
+:global(body.theme-dark) .program-burning-page .file-card__dropzone-copy p,
+:global(body[data-theme="dark"]) .program-burning-page .file-card__dropzone-copy p {
+  color: var(--dt-text-secondary);
+}
+
+:global(html[data-theme="dark"]) .program-burning-page .file-card__tag,
+:global(html.theme-dark) .program-burning-page .file-card__tag,
+:global(body.body--dark) .program-burning-page .file-card__tag,
+:global(body.theme-dark) .program-burning-page .file-card__tag,
+:global(body[data-theme="dark"]) .program-burning-page .file-card__tag {
+  background: var(--software-tag-bg);
+  color: var(--software-tag-text);
+}
+
+:global(html[data-theme="dark"]) .program-burning-page .file-card__format,
+:global(html[data-theme="dark"]) .program-burning-page .file-card .file-state-chip,
+:global(html[data-theme="dark"]) .program-burning-page .log-stage,
+:global(html.theme-dark) .program-burning-page .file-card__format,
+:global(html.theme-dark) .program-burning-page .file-card .file-state-chip,
+:global(html.theme-dark) .program-burning-page .log-stage,
+:global(body.body--dark) .program-burning-page .file-card__format,
+:global(body.body--dark) .program-burning-page .file-card .file-state-chip,
+:global(body.body--dark) .program-burning-page .log-stage,
+:global(body.theme-dark) .program-burning-page .file-card__format,
+:global(body.theme-dark) .program-burning-page .file-card .file-state-chip,
+:global(body.theme-dark) .program-burning-page .log-stage,
+:global(body[data-theme="dark"]) .program-burning-page .file-card__format,
+:global(body[data-theme="dark"]) .program-burning-page .file-card .file-state-chip,
+:global(body[data-theme="dark"]) .program-burning-page .log-stage {
+  background: var(--software-chip-bg);
+  color: var(--software-chip-text);
+}
+
+:global(html[data-theme="dark"]) .program-burning-page .file-card__progress,
+:global(html.theme-dark) .program-burning-page .file-card__progress,
+:global(body.body--dark) .program-burning-page .file-card__progress,
+:global(body.theme-dark) .program-burning-page .file-card__progress,
+:global(body[data-theme="dark"]) .program-burning-page .file-card__progress {
+  color: var(--dt-text-secondary);
+}
+
+:global(html[data-theme="dark"]) .program-burning-page .file-card__progress :deep(.q-linear-progress),
+:global(html.theme-dark) .program-burning-page .file-card__progress :deep(.q-linear-progress),
+:global(body.body--dark) .program-burning-page .file-card__progress :deep(.q-linear-progress),
+:global(body.theme-dark) .program-burning-page .file-card__progress :deep(.q-linear-progress),
+:global(body[data-theme="dark"]) .program-burning-page .file-card__progress :deep(.q-linear-progress) {
+  background: var(--software-progress-bg);
+}
+
+:global(html[data-theme="dark"]) .program-burning-page .action-strip,
+:global(html.theme-dark) .program-burning-page .action-strip,
+:global(body.body--dark) .program-burning-page .action-strip,
+:global(body.theme-dark) .program-burning-page .action-strip,
+:global(body[data-theme="dark"]) .program-burning-page .action-strip {
+  background: var(--software-workspace-bg), radial-gradient(circle at left center, var(--software-accent-soft), transparent 36%);
+}
+
+:global(html[data-theme="dark"]) .program-burning-page .empty-state,
+:global(html[data-theme="dark"]) .program-burning-page .log-empty,
+:global(html.theme-dark) .program-burning-page .empty-state,
+:global(html.theme-dark) .program-burning-page .log-empty,
+:global(body.body--dark) .program-burning-page .empty-state,
+:global(body.body--dark) .program-burning-page .log-empty,
+:global(body.theme-dark) .program-burning-page .empty-state,
+:global(body.theme-dark) .program-burning-page .log-empty,
+:global(body[data-theme="dark"]) .program-burning-page .empty-state,
+:global(body[data-theme="dark"]) .program-burning-page .log-empty {
+  border-color: rgba(100, 128, 188, 0.46);
+  background: var(--software-card-bg-ghost);
+}
+
+@media (max-width: 1200px) {
+  .software-grid--online,
+  .software-bottom-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .summary-grid,
+  .status-grid,
+  .file-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .file-grid--local {
+    grid-template-rows: none;
+  }
+}
+
+@media (max-width: 860px) {
+  .workspace-panel__head,
+  .loader-form,
+  .action-strip {
     flex-direction: column;
-  }
-
-  .form-grid,
-  .upload-grid,
-  .upload-grid--wide {
-    grid-template-columns: 1fr;
-  }
-
-  .flag-write {
-    grid-template-columns: 1fr;
     align-items: stretch;
   }
 
-  .page-card {
-    overflow: visible;
+  .workspace-panel {
+    padding: 14px;
+  }
+
+  .source-tabs {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .summary-grid,
+  .status-grid,
+  .file-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .file-grid--local {
+    grid-template-rows: none;
+  }
+
+  .file-card__actions {
+    flex-direction: column;
+  }
+
+  .action-strip__copy,
+  .action-strip__actions {
+    width: 100%;
+  }
+
+  .action-strip__copy {
+    justify-content: space-between;
+  }
+
+  .action-strip__actions {
+    flex-direction: column;
+  }
+
+  .file-card__actions > :deep(.q-btn) {
+    width: 100%;
+  }
+
+  .action-strip__actions > :deep(.q-btn) {
+    width: 100%;
   }
 }
 </style>

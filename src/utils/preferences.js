@@ -4,8 +4,10 @@ export const DEFAULT_PREFERENCES = {
   logDirectory: "",
   autostart: false,
   checkUpdatesOnLaunch: true,
+  locale: "zh-CN",
   updateChannel: "Stable",
   themeColor: "#1677FF",
+  themeMode: "light",
   density: "Desktop Default",
 }
 
@@ -36,4 +38,26 @@ export function savePreferences(preferences) {
 
 export function shouldCheckUpdatesOnLaunch() {
   return loadPreferences().checkUpdatesOnLaunch
+}
+
+export function getStoredLocale() {
+  return loadPreferences().locale || DEFAULT_PREFERENCES.locale
+}
+
+export function saveLocale(locale) {
+  savePreferences({
+    ...loadPreferences(),
+    locale,
+  })
+}
+
+export function getStoredThemeModePreference() {
+  return loadPreferences().themeMode || DEFAULT_PREFERENCES.themeMode
+}
+
+export function saveThemeMode(themeMode) {
+  savePreferences({
+    ...loadPreferences(),
+    themeMode,
+  })
 }

@@ -1,0 +1,38 @@
+export default {
+  title: {
+    workspace: "Workspace",
+  },
+  language: {
+    notApplied: "Language switch did not take effect",
+  },
+  dialog: {
+    hotplugTitle: "New Device Detected",
+    hotplugMessage: "A serial adapter ({port}) was detected. Connect now?",
+    hotplugLater: "Later",
+    hotplugNow: "Connect Now",
+  },
+  device: {
+    title: "Connect Device",
+    manualModel: "Model",
+    manualModelPlaceholder: "Enter model and press Enter to read config",
+    manualModelRequired: "Please enter a model first",
+    manualModelReadPending: "The CQ read API for model {model} is not wired yet",
+    cqCode: "CQ Code",
+    cqCodePlaceholder: "Example: CQ04000110",
+    transportMode: "Transport Mode",
+    meterBaudRate: "Meter Baud Rate",
+    canFrameType: "CAN Frame Type",
+    canBaudRate: "CAN Baud Rate",
+    port: "Port",
+    refreshPorts: "Refresh",
+    connectDevice: "Connect",
+    disconnectDevice: "Disconnect",
+    transportUart: "UART",
+    transportCan: "CAN",
+    frameStandard: "Standard",
+    frameExtended: "Extended",
+    portsRefreshed: "Port list refreshed",
+    serialConnected: "Serial connected",
+    serialDisconnected: "Serial disconnected",
+  },
+}

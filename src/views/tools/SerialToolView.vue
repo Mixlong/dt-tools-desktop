@@ -1,7 +1,7 @@
 <template>
-  <ToolShell title="串口协议控制台" description="直接向 UniMaster 适配器发送 55 协议命令，查看请求帧和应答帧。">
+  <ToolShell :title="t('tools.serialConsole.title')" :description="t('tools.serialConsole.description')">
     <template #main>
-      <div class="log-panel">
+      <div class="log-panel dark-box">
         <div v-for="item in logs" :key="item.id" class="log-block">
           <div class="log-head">
             <span>{{ item.time }}</span>
@@ -11,31 +11,36 @@
           <div>RX: <code>{{ item.responseHex }}</code></div>
         </div>
         <div v-if="logs.length === 0" class="log-empty">
-          <strong>等待命令执行</strong>
-          <p>从右侧输入命令字和 HEX 负载后，发送结果会按时间倒序显示在这里。</p>
+          <strong>{{ t("tools.serialConsole.waitingTitle") }}</strong>
+          <p>{{ t("tools.serialConsole.waitingDescription") }}</p>
         </div>
       </div>
     </template>
+
     <template #side>
-      <p class="side-copy">适合临时调试版本读取、接入状态和透传切换命令。保持输入区简洁，重点放在收发帧结果。</p>
-      <el-form label-position="top" class="command-form">
-        <el-form-item label="命令字">
-          <el-input v-model="commandText" placeholder="例如 A0 / B1 / A7" />
-        </el-form-item>
-        <el-form-item label="负载 HEX">
-          <el-input v-model="payload" type="textarea" :rows="6" placeholder="例如 04 或 00 00 00 01" />
-        </el-form-item>
-      </el-form>
-      <el-button class="send-button" type="primary" :loading="loading" @click="send">发送命令</el-button>
+      <p class="side-copy">{{ t("tools.serialConsole.sideCopy") }}</p>
+      <div class="command-form">
+        <div class="command-field">
+          <label>{{ t("tools.serialConsole.command") }}</label>
+          <q-input v-model="commandText" outlined dense :placeholder="t('tools.serialConsole.commandPlaceholder')" />
+        </div>
+        <div class="command-field">
+          <label>{{ t("tools.serialConsole.payload") }}</label>
+          <q-input v-model="payload" outlined dense type="textarea" autogrow :placeholder="t('tools.serialConsole.payloadPlaceholder')" />
+        </div>
+      </div>
+      <q-btn class="send-button" color="primary" unelevated :loading="loading" :label="t('tools.serialConsole.send')" @click="send" />
     </template>
   </ToolShell>
 </template>
 
 <script setup>
-import { ElMessage } from "element-plus"
+import { useI18n } from "vue-i18n"
+import { notifyError } from "@/services/ui"
 import { parseHexInput, sendRawCommand } from "@/api/unimaster"
 import ToolShell from "./ToolShell.vue"
 
+const { t } = useI18n()
 const commandText = ref("A0")
 const payload = ref("")
 const loading = ref(false)
@@ -46,20 +51,22 @@ async function send() {
   try {
     const command = Number.parseInt(commandText.value.replace(/^0x/i, ""), 16)
     if (Number.isNaN(command)) {
-      throw new Error("命令字格式错误")
+      throw new Error(t("tools.serialConsole.invalidCommand"))
     }
+
     const exchange = await sendRawCommand({
       command,
       payload: parseHexInput(payload.value),
       timeoutMs: 1500,
     })
+
     logs.value.unshift({
       ...exchange,
       id: Date.now(),
       time: new Date().toLocaleTimeString(),
     })
   } catch (error) {
-    ElMessage.error(String(error))
+    notifyError(error)
   } finally {
     loading.value = false
   }
@@ -71,20 +78,22 @@ async function send() {
   display: flex;
   flex-direction: column;
   gap: 14px;
+  min-height: 100%;
+  padding: 16px;
 }
 
 .log-block {
   padding: 12px 14px;
-  border: 1px solid rgba(135, 160, 204, 0.2);
+  border: 1px solid var(--dt-border);
   border-radius: var(--dt-radius-field);
-  background: rgba(255, 255, 255, 0.02);
+  background: #ffffff;
 }
 
 .log-head {
   display: flex;
   justify-content: space-between;
   margin-bottom: 8px;
-  color: #8ea7cf;
+  color: var(--dt-text-secondary);
 }
 
 .log-empty {
@@ -92,7 +101,7 @@ async function send() {
   place-items: center;
   min-height: 320px;
   text-align: center;
-  color: #afc4e8;
+  color: var(--dt-text-secondary);
 }
 
 .log-empty strong {
@@ -113,7 +122,22 @@ async function send() {
 }
 
 .command-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
   margin-bottom: 16px;
+}
+
+.command-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.command-field label {
+  color: var(--dt-text-secondary);
+  font-size: 12px;
+  font-weight: 800;
 }
 
 .send-button {

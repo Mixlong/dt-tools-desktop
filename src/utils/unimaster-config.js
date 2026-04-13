@@ -80,38 +80,49 @@ export const WHEEL_DIAMETER_OPTIONS = [
 ]
 
 export const UNIT_OPTIONS = [
-  { label: "公制", value: 0 },
-  { label: "英制", value: 1 },
+  { label: "km/h", value: 0 },
+  { label: "mph", value: 1 },
 ]
 
 export const AGREEMENT_OPTIONS = [
   { label: "KM5S", value: 0 },
-  { label: "锂电 2 号", value: 1 },
+  { label: "锂电2号", value: 1 },
   { label: "八方", value: 2 },
-  { label: "J 协议", value: 3 },
+  { label: "J协议", value: 3 },
+  { label: "高标", value: 4 },
+  { label: "迪太", value: 5 },
+  { label: "安乃达", value: 6 },
+  { label: "天腾", value: 7 },
+  { label: "溧水CAN", value: 8 },
+  { label: "同盛", value: 9 },
+  { label: "赛维", value: 10 },
+  { label: "东玫", value: 11 },
+  { label: "川克", value: 12 },
+  { label: "泛舟", value: 13 },
+  { label: "盛亿", value: 14 },
+  { label: "小牛EB协议", value: 15 },
+  { label: "麦思CAN", value: 16 },
+  { label: "安普达", value: 17 },
+  { label: "客户定制协议", value: 255 },
 ]
 
 export const POWER_MODE_OPTIONS = [
   { label: "控制器上报电压，仪表计算电量", value: 0 },
   { label: "控制器上报电量", value: 1 },
-  { label: "仪表检测电压，仪表计算电量", value: 2 },
+  { label: "仪表检查电压，仪表计算电量", value: 2 },
 ]
 
 export const LOGO_OPTIONS = [
   { label: "迪太界面", value: 0 },
   { label: "中性界面", value: 1 },
   { label: "客户界面", value: 2 },
-  ...Array.from({ length: 7 }, (_, index) => ({
-    label: `保留项 ${index + 3}`,
-    value: index + 3,
-  })),
 ]
 
 export const EBIKE_NAME_OPTIONS = [
-  { label: "Pace500", value: 0 },
-  { label: "Pace350", value: 1 },
-  { label: "Level", value: 2 },
-  { label: "Sinch", value: 3 },
+  { label: "Pace500或者Metro LT", value: 0 },
+  { label: "Pace350或者Metropolitain", value: 1 },
+  { label: "Level或者Caravelle", value: 2 },
+  { label: "Sinch或者Iltis", value: 3 },
   { label: "Aventure", value: 4 },
   { label: "Pace", value: 5 },
   { label: "Sinch ST", value: 6 },
@@ -120,7 +131,26 @@ export const EBIKE_NAME_OPTIONS = [
   { label: "Soltera", value: 9 },
   { label: "Soltera-7S", value: 10 },
   { label: "Cruiser", value: 11 },
-  { label: "Aventure Pro", value: 12 },
+  { label: "Level V2", value: 12 },
+  { label: "Sinch ST V2", value: 13 },
+  { label: "Aventure V2", value: 14 },
+  { label: "Abound", value: 15 },
+  { label: "Aventure CN", value: 16 },
+  { label: "Sinch ST CN", value: 17 },
+  { label: "Sinch CN", value: 18 },
+  { label: "Aventure.2", value: 19 },
+  { label: "Pace350.3", value: 20 },
+  { label: "Pace500.3", value: 21 },
+  { label: "Level.3", value: 22 },
+  { label: "Sinch ST.2", value: 23 },
+  { label: "Soltera.2", value: 24 },
+  { label: "Level.2", value: 25 },
+  { label: "Aventure M", value: 26 },
+  { label: "Abound.3", value: 32 },
+  { label: "Aventure.2", value: 34 },
+  { label: "Level M", value: 37 },
+  { label: "Metro LT", value: 254 },
+  { label: "Utility", value: 255 },
 ]
 
 export const BOOLEAN_YES_NO_OPTIONS = [
@@ -219,7 +249,6 @@ export const METER_CONFIG_GROUPS = [
       { key: "showWheelsize", label: "显示轮径", type: "number", min: 0 },
       { key: "tiresSize", label: "车轮宽度", type: "number", min: 0 },
       { key: "unit", label: "显示单位", type: "select", options: UNIT_OPTIONS },
-      { key: "ebikeName", label: "车名", type: "select", options: EBIKE_NAME_OPTIONS },
       { key: "carModel", label: "车型代码", type: "text", maxlength: 2 },
       { key: "logo", label: "LOGO 界面", type: "select", options: LOGO_OPTIONS },
     ],
@@ -264,6 +293,7 @@ export const METER_CONFIG_GROUPS = [
     title: "高级与安全",
     description: "巡航、蜂鸣器、密码和电池信息等高级配置。",
     fields: [
+      { key: "ebikeName", label: "车名", type: "select", options: EBIKE_NAME_OPTIONS },
       { key: "factoryReset", label: "恢复出厂设置", type: "select", options: BOOLEAN_REVERSED_OPTIONS },
       { key: "cruise", label: "定速巡航", type: "select", options: BOOLEAN_REVERSED_OPTIONS },
       { key: "buzzerSwitch", label: "蜂鸣器开关", type: "select", options: BOOLEAN_REVERSED_OPTIONS },

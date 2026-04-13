@@ -1,30 +1,40 @@
 <template>
   <div class="tool-shell">
-    <section class="page-card main-card">
-      <div class="section-header">
+    <section class="panel tool-shell__main">
+      <div class="tool-shell__head">
         <div>
-          <span class="section-eyebrow">Operation Panel</span>
+          <span class="section-eyebrow">{{ t("tools.shell.operationPanel") }}</span>
           <h2>{{ title }}</h2>
           <p>{{ description }}</p>
         </div>
+        <span class="metric-chip">
+          <span class="metric-chip__dot" />
+          {{ t("tools.shell.desktopWorkflow") }}
+        </span>
       </div>
-      <div class="card-scroll">
+      <q-scroll-area class="tool-shell__scroll">
         <slot name="main" />
-      </div>
+      </q-scroll-area>
     </section>
-    <aside class="page-card side-card">
-      <div class="side-card__head">
-        <span class="section-eyebrow">Inspector</span>
-        <h3>辅助操作区</h3>
+
+    <aside class="panel tool-shell__side">
+      <div class="tool-shell__side-head">
+        <span class="section-eyebrow">{{ t("tools.shell.inspector") }}</span>
+        <h3>{{ t("tools.shell.helperTitle") }}</h3>
+        <p>{{ t("tools.shell.helperDescription") }}</p>
       </div>
-      <div class="card-scroll">
+      <q-scroll-area class="tool-shell__scroll">
         <slot name="side" />
-      </div>
+      </q-scroll-area>
     </aside>
   </div>
 </template>
 
 <script setup>
+import { useI18n } from "vue-i18n"
+
+const { t } = useI18n()
+
 defineProps({
   title: String,
   description: String,
@@ -34,81 +44,59 @@ defineProps({
 <style scoped lang="scss">
 .tool-shell {
   display: grid;
-  grid-template-columns: 1.6fr 0.8fr;
-  gap: 18px;
+  grid-template-columns: minmax(0, 1.6fr) minmax(320px, 0.8fr);
+  gap: var(--dt-space-3);
   height: 100%;
   min-height: 0;
 }
 
-.page-card {
-  padding: 22px;
+.tool-shell__main,
+.tool-shell__side {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  padding: 20px;
 }
 
-.main-card {
-  background: linear-gradient(180deg, #ffffff, #f8fbfe);
+.tool-shell__main {
+  background: var(--dt-gloss-surface);
 }
 
-.side-card {
-  background: linear-gradient(180deg, #fdfefe, #f6f9fd);
+.tool-shell__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
 }
 
-.section-header h2 {
-  margin: 0 0 8px;
-  font-size: 24px;
-}
-
-.section-header p {
-  margin: 0 0 20px;
-  max-width: 760px;
-  color: #6e7d94;
+.tool-shell__head p {
+  margin: 10px 0 0;
+  color: var(--dt-text-secondary);
   line-height: 1.7;
 }
 
-.side-card__head {
-  margin-bottom: 18px;
+.tool-shell__side-head {
+  margin-bottom: 16px;
 }
 
-.side-card__head h3 {
-  margin: 0;
-  font-size: 16px;
+.tool-shell__side-head p {
+  margin: 8px 0 0;
+  color: var(--dt-text-secondary);
+  line-height: 1.65;
 }
 
-.card-scroll {
+.tool-shell__scroll {
   flex: 1;
   min-height: 0;
-  overflow: auto;
-  padding-right: 4px;
-}
-
-.log-panel {
-  min-height: 480px;
-  border-radius: var(--dt-radius-subtle);
-  background: linear-gradient(180deg, #0f1828, #162235);
-  border: 1px solid rgba(99, 126, 175, 0.24);
-  padding: 16px;
-  color: #d9ebff;
-}
-
-.log-line {
-  display: grid;
-  grid-template-columns: 90px 44px 1fr;
-  gap: 10px;
-  padding: 8px 0;
-  font-size: 13px;
 }
 
 @media (max-width: 1080px) {
   .tool-shell {
     grid-template-columns: 1fr;
-    height: auto;
   }
 
-  .card-scroll {
-    overflow: visible;
-    padding-right: 0;
+  .tool-shell__scroll {
+    min-height: auto;
   }
 }
 </style>
