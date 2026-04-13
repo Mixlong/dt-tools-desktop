@@ -99,9 +99,7 @@ async fn connect_serial(
 }
 
 #[tauri::command]
-async fn disconnect_serial(
-    app: tauri::AppHandle,
-) -> Result<unimaster::ConnectionStatus, String> {
+async fn disconnect_serial(app: tauri::AppHandle) -> Result<unimaster::ConnectionStatus, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let serial_manager = app.state::<unimaster::SerialManager>();
         ensure_serial_idle(&serial_manager)?;
@@ -388,7 +386,8 @@ pub fn run() {
                     loop {
                         thread::sleep(Duration::from_millis(1500));
 
-                        let mut current_ports = unimaster::list_serial_port_names().unwrap_or_default();
+                        let mut current_ports =
+                            unimaster::list_serial_port_names().unwrap_or_default();
                         current_ports.sort();
 
                         if current_ports != last_ports {

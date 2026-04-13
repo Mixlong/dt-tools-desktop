@@ -50,32 +50,35 @@ jobs:
           }
 
           let normalizedKey = rawKey.trim().replace(/\r\n/g, "\n")
+          let decodedKey = normalizedKey
 
           if (!normalizedKey.includes("\n") && normalizedKey.includes("\\n")) {
             normalizedKey = normalizedKey.replace(/\\n/g, "\n")
+            decodedKey = normalizedKey
           }
 
-          if (!normalizedKey.startsWith("untrusted comment:")) {
+          if (!decodedKey.startsWith("untrusted comment:")) {
             const compactKey = normalizedKey.replace(/\s+/g, "")
 
             if (/^[A-Za-z0-9+/=]+$/.test(compactKey) && compactKey.length % 4 === 0) {
               try {
-                const decodedKey = Buffer.from(compactKey, "base64").toString("utf8").trim()
+                const parsedKey = Buffer.from(compactKey, "base64").toString("utf8").trim()
 
-                if (decodedKey.startsWith("untrusted comment:")) {
-                  normalizedKey = decodedKey.replace(/\r\n/g, "\n")
+                if (parsedKey.startsWith("untrusted comment:")) {
+                  decodedKey = parsedKey.replace(/\r\n/g, "\n")
                 }
               } catch {
               }
             }
           }
 
-          if (!normalizedKey.startsWith("untrusted comment:")) {
+          if (!decodedKey.startsWith("untrusted comment:")) {
             throw new Error("TAURI_SIGNING_PRIVATE_KEY is not a valid minisign secret key. Store the raw key text or its base64-encoded content in GitHub Secrets.")
           }
 
+          const encodedKey = Buffer.from(decodedKey, "utf8").toString("base64")
           const envFile = process.env.GITHUB_ENV
-          fs.appendFileSync(envFile, `TAURI_SIGNING_PRIVATE_KEY<<__TAURI_KEY__\n${normalizedKey}\n__TAURI_KEY__\n`)
+          fs.appendFileSync(envFile, `TAURI_SIGNING_PRIVATE_KEY<<__TAURI_KEY__\n${encodedKey}\n__TAURI_KEY__\n`)
           fs.appendFileSync(envFile, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD<<__TAURI_PASSWORD__\n${rawPassword}\n__TAURI_PASSWORD__\n`)
           NODE
       - run: pnpm tauri build --target x86_64-pc-windows-msvc --bundles nsis
