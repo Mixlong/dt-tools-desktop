@@ -1093,8 +1093,9 @@ function setSectionRef(groupKey, el) {
 }
 
 .config-empty__spark--right {
-  right: 54px;
-  top: 146px;
+  top: 50%;
+  right: 35px;
+  transform: translateY(-50%);
   animation-delay: 0.9s;
 }
 

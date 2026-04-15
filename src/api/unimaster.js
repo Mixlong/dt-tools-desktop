@@ -1,5 +1,7 @@
 import { invoke } from "@tauri-apps/api/core"
 
+const MODEL_QUERY_BASE_URL = "http://192.168.2.114:8111"
+
 export function listSerialPorts() {
   return invoke("list_serial_ports")
 }
@@ -62,6 +64,32 @@ export function prepareOfflineUpgrade(request) {
 
 export function loadProgramBurningBundle(codeOrSn) {
   return invoke("load_program_burning_bundle", { codeOrSn })
+}
+
+export async function queryModelConfigByComputerName(computerName) {
+  const normalizedComputerName = String(computerName || "").trim().toUpperCase()
+  if (!normalizedComputerName) {
+    throw new Error("请输入型号名称")
+  }
+
+  const url = `${MODEL_QUERY_BASE_URL}/model/config/computer/name/${encodeURIComponent(normalizedComputerName)}`
+  const response = await fetch(url, {
+    method: "GET",
+    headers: {
+      Accept: "application/json",
+    },
+  })
+
+  if (!response.ok) {
+    throw new Error(`型号查询失败，状态码 ${response.status}`)
+  }
+
+  const payload = await response.json()
+  if (Number(payload?.code) !== 200) {
+    throw new Error(String(payload?.msg || "型号查询返回异常"))
+  }
+
+  return payload?.data ?? null
 }
 
 export function setMeterConfigTransport(request) {

@@ -152,6 +152,7 @@ export const useDeviceStore = defineStore("device", {
     meterCanFrameType: DEFAULT_METER_CAN_FRAME_TYPE,
     meterLinkReady: false,
     upgradeCqCode: "",
+    softwareUpgradeTargetKind: "app",
     pendingHotplugPort: "",
     upgradeInProgress: false,
   }),

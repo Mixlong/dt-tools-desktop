@@ -270,34 +270,11 @@
 
   </q-layout>
 
-  <q-dialog v-model="cqPasswordDialogOpen" persistent no-shake>
-    <q-card class="cq-dialog">
-      <q-card-section class="cq-dialog__section">
-        <div class="cq-dialog__title">升级配置入口</div>
-        <div class="cq-dialog__desc">输入密码后可打开 CQ 配置生成器。</div>
-      </q-card-section>
-      <q-card-section class="cq-dialog__section cq-dialog__section--compact">
-        <q-input
-          v-model="cqPasswordInput"
-          outlined
-          dense
-          autofocus
-          type="password"
-          label="访问密码"
-          @keyup.enter="submitCqPassword"
-        />
-      </q-card-section>
-      <q-card-actions align="right" class="cq-dialog__actions">
-        <q-btn flat label="取消" @click="closeCqPasswordDialog" />
-        <q-btn unelevated color="primary" label="确认" @click="submitCqPassword" />
-      </q-card-actions>
-    </q-card>
-  </q-dialog>
-
   <q-dialog v-model="cqGeneratorDialogOpen" persistent no-shake>
     <q-card class="cq-dialog cq-dialog--generator">
       <q-card-section class="cq-dialog__section">
         <div class="cq-dialog__title">CQ 配置生成器</div>
+        <div class="cq-dialog__desc">可直接生成新的 CQ 配置串，也可回显左侧当前配置串。</div>
       </q-card-section>
       <q-card-section class="cq-dialog__section cq-dialog__section--compact">
         <q-btn-toggle
@@ -349,8 +326,9 @@
         />
       </q-card-section>
       <q-card-section class="cq-dialog__section cq-dialog__section--compact">
-        <q-input :model-value="cqGeneratorPreview" outlined dense readonly label="CQ 配置串">
+        <q-input :model-value="cqGeneratorPreview" class="cq-dialog__preview-input" outlined dense readonly label="CQ 配置串">
           <template #append>
+            <q-btn flat dense no-caps color="primary" :loading="cqGeneratorRestoring" label="按型号回显" @click="restoreCurrentCqCode" />
             <q-btn flat round dense icon="content_copy" @click="copyCqCode" />
           </template>
         </q-input>
@@ -368,7 +346,7 @@ import { useRoute } from "vue-router"
 import { useQuasar } from "quasar"
 import { useI18n } from "vue-i18n"
 import { getCurrentWindow } from "@tauri-apps/api/window"
-import { frontendLog, switchLanguage } from "@/api/unimaster"
+import { frontendLog, queryModelConfigByComputerName, switchLanguage } from "@/api/unimaster"
 import { navSections } from "@/config/navigation"
 import { applyLocale, getCurrentLocale, getDeviceLanguageCode, getLocaleSwitchLabel, getTargetLocale } from "@/i18n"
 import { notifyError, notifyInfo, notifySuccess } from "@/services/ui"
@@ -377,7 +355,6 @@ import { saveThemeMode } from "@/utils/preferences"
 import { applyThemeMode } from "@/utils/theme"
 import {
   UPGRADE_CAN_BAUD_OPTIONS,
-  UPGRADE_CQ_PASSWORD,
   UPGRADE_POWER_VOLTAGE_OPTIONS,
   UPGRADE_PROTOCOL_TYPE_OPTIONS,
   UPGRADE_UART_BAUD_OPTIONS,
@@ -390,6 +367,7 @@ import {
   getUpgradeFrameIdOptions,
   getUpgradeFrameTypeOptions,
 } from "@/utils/upgrade-cq"
+import { buildCqCodeFromModelConfig, buildUpgradeCqStateFromModelConfig } from "@/utils/model-config"
 import darkLogoImage from "@/assect/images/logo.svg"
 import lightLogoImage from "@/assect/images/log2.svg"
 
@@ -422,6 +400,8 @@ let startupHotplugPromptTimer = null
 let hiddenEntryTimer = null
 const isConfigRoute = computed(() => route.path === "/config")
 const isSettingsRoute = computed(() => route.path === "/settings")
+const isSoftwareRoute = computed(() => route.path === "/software")
+const cqSyncKey = computed(() => `${route.path}:${deviceStore.softwareUpgradeTargetKind || "app"}`)
 const primaryNavSections = computed(() => (
   navSections.filter((item) => ["/home", "/config", "/software"].includes(item.to))
 ))
@@ -433,9 +413,9 @@ const panelCqCode = computed({
   },
 })
 const hiddenEntryClicks = ref(0)
-const cqPasswordDialogOpen = ref(false)
-const cqPasswordInput = ref("")
 const cqGeneratorDialogOpen = ref(false)
+const cqGeneratorRestoring = ref(false)
+const panelCqSyncing = ref(false)
 const cqGeneratorForm = reactive({
   burnFileType: 1,
   ...createDefaultUpgradeCqState(),
@@ -551,8 +531,8 @@ function handleManualModelInputChange(value) {
   }
 }
 
-function handleManualModelSubmit() {
-  const normalized = String(manualModelInput.value || "").trim()
+async function handleManualModelSubmit() {
+  const normalized = String(manualModelInput.value || "").trim().toUpperCase()
   manualModelInput.value = normalized
 
   if (!normalized) {
@@ -560,8 +540,26 @@ function handleManualModelSubmit() {
     return
   }
 
-  deviceStore.setModel(normalized)
-  notifyInfo(t("layout.device.manualModelReadPending", { model: normalized }))
+  try {
+    const config = await queryModelConfigByComputerName(normalized)
+    if (!config) {
+      deviceStore.setModel(normalized)
+      notifyInfo(t("layout.device.manualModelNotFound", { model: normalized }))
+      return
+    }
+
+    const cqCode = buildCqCodeFromModelConfig(config, getGeneratorProfileOptions())
+    deviceStore.setModel(normalized)
+    manualModelInput.value = String(config.computerName || normalized).trim().toUpperCase()
+    const syncSuccess = syncDeviceConfigWithCqCode(cqCode, { notifyOnError: true })
+    if (!syncSuccess) {
+      throw new Error(t("layout.device.manualModelReadFailed", { model: normalized }))
+    }
+    notifySuccess(t("layout.device.manualModelLoaded", { model: normalized }))
+  } catch (error) {
+    console.error("[layout] failed to read model config:", error)
+    notifyError(error?.message ? error : t("layout.device.manualModelReadFailed", { model: normalized }))
+  }
 }
 
 function resetHiddenEntryCounter() {
@@ -587,12 +585,11 @@ function handleHiddenEntryClick() {
   }
 
   resetHiddenEntryCounter()
-  cqPasswordInput.value = ""
-  cqPasswordDialogOpen.value = true
+  openCqGeneratorDialog()
 }
 
 function handleGlobalHiddenEntryClick(event) {
-  if (cqPasswordDialogOpen.value || cqGeneratorDialogOpen.value) {
+  if (cqGeneratorDialogOpen.value) {
     resetHiddenEntryCounter()
     return
   }
@@ -605,35 +602,126 @@ function handleGlobalHiddenEntryClick(event) {
   handleHiddenEntryClick()
 }
 
-function closeCqPasswordDialog() {
-  cqPasswordDialogOpen.value = false
-  cqPasswordInput.value = ""
-}
-
 function syncCqGeneratorWithDevice() {
   if (deviceStore.meterCommType === 0x02) {
     cqGeneratorForm.commType = 0x02
     cqGeneratorForm.baudCode = Number(deviceStore.meterBaudCode ?? 0x08)
     cqGeneratorForm.frameType = Number(deviceStore.meterFrameType ?? 0x01) || 0x01
     cqGeneratorForm.frameId = cqGeneratorForm.frameId === 0x02 ? 0x02 : 0x01
+    cqGeneratorForm.fileFormat = 0x01
     return
   }
 
   cqGeneratorForm.commType = 0x00
   cqGeneratorForm.baudCode = Number(deviceStore.meterBaudCode ?? 0x0B)
   cqGeneratorForm.frameType = 0x00
-  cqGeneratorForm.frameId = 0x01
+  cqGeneratorForm.fileFormat = 0x01
+  cqGeneratorForm.frameId = 0x00
   cqGeneratorForm.specialFrameValue = ""
 }
 
-function submitCqPassword() {
-  if (cqPasswordInput.value !== UPGRADE_CQ_PASSWORD) {
-    notifyError("密码错误")
-    cqPasswordInput.value = ""
-    return
+function applyParsedCqToGenerator(parsedCq) {
+  cqGeneratorForm.commType = Number(parsedCq.commType)
+  cqGeneratorForm.baudCode = Number(parsedCq.baudCode)
+  cqGeneratorForm.frameType = Number(parsedCq.frameType ?? 0x00)
+  cqGeneratorForm.powerVoltage = Number(parsedCq.powerVoltage)
+  cqGeneratorForm.vlk5vEnabled = Number(parsedCq.vlk5vEnabled)
+  cqGeneratorForm.protocolType = Number(parsedCq.protocolType)
+  cqGeneratorForm.burnFileType = Number(parsedCq.burnFileType ?? 1)
+  cqGeneratorForm.fileFormat = Number(parsedCq.fileFormat ?? 0x01)
+  cqGeneratorForm.frameId = Number(parsedCq.frameId ?? 0x01)
+  cqGeneratorForm.specialFrameValue = String(parsedCq.specialFrameValue || "")
+}
+
+function getGeneratorModelName() {
+  return String(manualModelInput.value || deviceStore.currentModel || "").trim().toUpperCase()
+}
+
+function getGeneratorProfileOptions() {
+  if (isSoftwareRoute.value) {
+    const softwareKind = ["app", "ui", "boot", "config"].includes(deviceStore.softwareUpgradeTargetKind)
+      ? deviceStore.softwareUpgradeTargetKind
+      : "app"
+    return {
+      transportProfile: "boot",
+      burnFileType: softwareKind === "ui" ? 2 : softwareKind === "config" ? 3 : softwareKind === "boot" ? 0 : 1,
+    }
   }
 
-  closeCqPasswordDialog()
+  return {
+    transportProfile: "app",
+    burnFileType: 1,
+  }
+}
+
+async function syncPanelCqFromModel(options = {}) {
+  const { notifyOnSuccess = false } = options
+  const modelName = getGeneratorModelName()
+
+  if (!modelName) {
+    if (notifyOnSuccess) {
+      notifyError("请先输入型号")
+    }
+    return false
+  }
+
+  if (panelCqSyncing.value) {
+    return false
+  }
+
+  panelCqSyncing.value = true
+  try {
+    const config = await queryModelConfigByComputerName(modelName)
+    if (!config) {
+      if (notifyOnSuccess) {
+        notifyError(`未找到型号 ${modelName} 的配置`)
+      }
+      return false
+    }
+
+    const profileOptions = getGeneratorProfileOptions()
+    const resolvedModelName = String(config.computerName || modelName).trim().toUpperCase()
+    const cqCode = buildCqCodeFromModelConfig(config, profileOptions)
+    deviceStore.setModel(resolvedModelName)
+    manualModelInput.value = resolvedModelName
+    const syncSuccess = syncDeviceConfigWithCqCode(cqCode, { notifyOnError: notifyOnSuccess })
+    if (!syncSuccess) {
+      return false
+    }
+
+    if (notifyOnSuccess) {
+      notifySuccess(`已回显型号 CQ：${cqCode}`)
+    }
+    return config
+  } catch (error) {
+    if (notifyOnSuccess) {
+      notifyError(error?.message ? error.message : error)
+    }
+    return false
+  } finally {
+    panelCqSyncing.value = false
+  }
+}
+
+async function restoreCurrentCqCode(options = {}) {
+  const { notifyOnSuccess = true } = options
+
+  cqGeneratorRestoring.value = true
+  try {
+    const config = await syncPanelCqFromModel({ notifyOnSuccess })
+    if (!config) {
+      return false
+    }
+
+    const cqState = buildUpgradeCqStateFromModelConfig(config, getGeneratorProfileOptions())
+    Object.assign(cqGeneratorForm, cqState)
+    return true
+  } finally {
+    cqGeneratorRestoring.value = false
+  }
+}
+
+function openCqGeneratorDialog() {
   syncCqGeneratorWithDevice()
   cqGeneratorDialogOpen.value = true
 }
@@ -793,11 +881,28 @@ onMounted(async () => {
 })
 
 watch(
+  cqSyncKey,
+  async (nextKey, previousKey) => {
+    if (nextKey === previousKey) {
+      return
+    }
+
+    const modelName = getGeneratorModelName()
+    if (!modelName) {
+      return
+    }
+
+    await syncPanelCqFromModel()
+  },
+)
+
+watch(
   () => cqGeneratorForm.commType,
   (value) => {
     if (Number(value) !== 0x02) {
       cqGeneratorForm.frameType = 0x00
-      cqGeneratorForm.frameId = 0x01
+      cqGeneratorForm.fileFormat = 0x01
+      cqGeneratorForm.frameId = 0x00
       cqGeneratorForm.specialFrameValue = ""
       return
     }
@@ -808,6 +913,7 @@ watch(
     if (![0x01, 0x02].includes(Number(cqGeneratorForm.frameId))) {
       cqGeneratorForm.frameId = 0x01
     }
+    cqGeneratorForm.fileFormat = 0x01
   },
   { immediate: true },
 )
@@ -2235,6 +2341,11 @@ async function toggleConnection() {
 
 .cq-dialog__field--full {
   grid-column: 1 / -1;
+}
+
+.cq-dialog__preview-input :deep(.q-field__append) {
+  gap: 6px;
+  padding-left: 10px;
 }
 
 .cq-dialog__actions {

@@ -414,6 +414,14 @@ struct DataChunk {
     data: Vec<u8>,
 }
 
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+enum UpgradeProtocol {
+    Default,
+    GaoBiao,
+    KaiYang,
+    Iot,
+}
+
 fn generate_program_burning_signature(url: &str, timestamp: u64) -> String {
     let raw = format!("url={url}||t={timestamp}||key={PROGRAM_BURNING_SIGN_KEY}");
     let first = format!("{:X}", md5::compute(raw));
@@ -653,7 +661,23 @@ impl SerialManager {
         let conn = guard
             .as_mut()
             .ok_or_else(|| "请先连接串口适配器".to_string())?;
-        callback(conn.port.as_mut())
+        let port_name = conn.port_name.clone();
+        let result = callback(conn.port.as_mut());
+
+        if let Err(error) = &result {
+            if should_drop_serial_connection(error) {
+                eprintln!(
+                    "[serial][disconnect-on-error] port={} error={}",
+                    port_name, error
+                );
+                *guard = None;
+                return Err(format!(
+                    "串口连接已断开，请重新连接设备后重试: {error}"
+                ));
+            }
+        }
+
+        result
     }
 
     pub fn send_command(
@@ -722,6 +746,16 @@ impl SerialManager {
             Ok(response.payload.first().copied().unwrap_or_default() != 0)
         })
     }
+}
+
+fn should_drop_serial_connection(message: &str) -> bool {
+    let normalized = message.trim().to_ascii_lowercase();
+    normalized.contains("broken pipe")
+        || normalized.contains("device not configured")
+        || normalized.contains("input/output error")
+        || normalized.contains("i/o error")
+        || normalized.contains("no such device")
+        || normalized.contains("bad file descriptor")
 }
 
 pub fn list_serial_ports() -> Result<Vec<SerialPortInfo>, String> {
@@ -1163,17 +1197,60 @@ pub fn init_realtime_upgrade(
     manager: &SerialManager,
     request: RealtimeInitRequest,
 ) -> Result<SimpleResult, String> {
-    let success = send_upgrade_param_command(manager, 0xA6, &request)?;
+    let payload = build_upgrade_param_payload(&request)?;
+    let response = manager.send_command(0xA6, &payload, DEFAULT_TIMEOUT_MS)?;
+    let response_payload = hex_to_bytes(&response.response_payload_hex)?;
+    let success = response_payload.first().copied().unwrap_or_default() == 1;
+    let burn_type_label = match request.burn_file_type {
+        0 => "BOOT",
+        1 => "APP",
+        2 => "UI",
+        3 => "CFG",
+        _ => "UNKNOWN",
+    };
+    let init_params = format_realtime_init_params(&request);
+    let detail = format!(
+        "命令 0xA6, 烧录类型={}, 响应载荷={}, 参数={}",
+        burn_type_label,
+        if response.response_payload_hex.is_empty() {
+            "--".to_string()
+        } else {
+            response.response_payload_hex.clone()
+        },
+        init_params
+    );
 
     Ok(SimpleResult {
         success,
         message: if success {
-            "实时烧录参数初始化成功"
+            format!("实时烧录参数初始化成功（{}）", detail)
         } else {
-            "实时烧录参数初始化失败"
+            format!("实时烧录参数初始化失败（{}）", detail)
         }
-        .to_string(),
+        ,
     })
+}
+
+fn format_realtime_init_params(request: &RealtimeInitRequest) -> String {
+    let cq_code = request
+        .cq_code
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("--");
+
+    format!(
+        "CQ={}, 通讯类型=0x{:02X}, 波特率=0x{:02X}, 帧类型=0x{:02X}, 供电电压=0x{:02X}, VLK5V={}, 协议类型=0x{:02X}, 烧录类型=0x{:02X}, 帧ID=0x{:02X}",
+        cq_code,
+        request.comm_type,
+        request.baud_code,
+        request.frame_type,
+        request.power_voltage,
+        if request.vlk5v_enabled { 1 } else { 0 },
+        request.protocol_type,
+        request.burn_file_type,
+        request.frame_id.unwrap_or(0),
+    )
 }
 
 pub fn perform_realtime_upgrade<F>(
@@ -1320,19 +1397,45 @@ where
             });
         }
 
+        let protocol = parse_upgrade_protocol(init_protocol_type);
+        let chunk_build_started_at = Instant::now();
+        let chunks = if matches!(kind, UpgradeKind::Config) {
+            Vec::new()
+        } else {
+            build_realtime_chunks(&file.file_name, &file.data, kind, protocol)?
+        };
+        let chunk_build_ms = chunk_build_started_at.elapsed().as_millis();
+        let average_chunk_size =
+            chunks.iter().map(|chunk| chunk.data.len()).sum::<usize>() / chunks.len().max(1);
+
         let erase_started_at = Instant::now();
-        let is_iot_app_upgrade =
-            matches!(kind, UpgradeKind::App) && is_iot_protocol(init_protocol_type);
+        let skip_erase = match kind {
+            UpgradeKind::App => protocol_skips_app_erase(protocol),
+            UpgradeKind::Ui => protocol_skips_ui_erase(protocol),
+            _ => false,
+        };
         match kind {
             UpgradeKind::Boot => send_ack_command(manager, 0xE0, &[], "BOOT 擦除", &mut logs)?,
             UpgradeKind::App => {
-                if is_iot_app_upgrade {
-                    logs.push("IOT 协议 APP 升级跳过 APP 擦除".to_string());
+                if skip_erase {
+                    logs.push(format!(
+                        "{} 协议 APP 升级跳过 APP 擦除",
+                        protocol_prep_label(protocol)
+                    ));
                 } else {
                     send_ack_command(manager, 0xA7, &[], "APP 擦除", &mut logs)?;
                 }
             }
-            UpgradeKind::Ui => send_ack_command(manager, 0xA9, &[], "UI 擦除", &mut logs)?,
+            UpgradeKind::Ui => {
+                if skip_erase {
+                    logs.push(format!(
+                        "{} 协议 UI 升级跳过 UI 擦除",
+                        protocol_prep_label(protocol)
+                    ));
+                } else {
+                    send_ack_command(manager, 0xA9, &[], "UI 擦除", &mut logs)?;
+                }
+            }
             UpgradeKind::Config => {
                 let payload = build_3a_frame(0xC0, &file.data)?;
                 send_ack_command(manager, 0xAD, &payload, "配置文件写入", &mut logs)?;
@@ -1380,11 +1483,7 @@ where
         let erase_log = format!(
             "{} {}耗时 {}",
             file.file_name,
-            if is_iot_app_upgrade {
-                "预处理"
-            } else {
-                "擦除"
-            },
+            if skip_erase { "预处理" } else { "擦除" },
             format_elapsed(erase_started_at.elapsed()),
         );
         logs.push(erase_log.clone());
@@ -1395,7 +1494,7 @@ where
             total_files,
             file,
             15,
-            if is_iot_app_upgrade {
+            if skip_erase {
                 format!("{} 预处理完成", file.file_name)
             } else {
                 format!("{} 擦除完成", file.file_name)
@@ -1404,12 +1503,21 @@ where
         );
         std::thread::sleep(Duration::from_millis(UPGRADE_POST_ERASE_SETTLE_MS));
 
-        if is_iot_app_upgrade {
+        if skip_erase {
             let info_started_at = Instant::now();
-            send_iot_firmware_info_command(manager, &file.file_name, &file.data, &mut logs)?;
+            send_protocol_prepare_command(
+                manager,
+                protocol,
+                kind,
+                &file.file_name,
+                &file.data,
+                chunks.len(),
+                &mut logs,
+            )?;
             let info_log = format!(
-                "{} IOT 固件信息下发耗时 {}",
+                "{} {}耗时 {}",
                 file.file_name,
+                protocol_prep_label(protocol),
                 format_elapsed(info_started_at.elapsed()),
             );
             logs.push(info_log.clone());
@@ -1419,16 +1527,10 @@ where
                 total_files,
                 file,
                 15,
-                format!("{} IOT 固件信息校验通过", file.file_name),
+                format!("{} {}完成", file.file_name, protocol_prep_label(protocol)),
                 Some(info_log),
             );
         }
-
-        let chunk_build_started_at = Instant::now();
-        let chunks = build_chunks(&file.file_name, &file.data, kind)?;
-        let chunk_build_ms = chunk_build_started_at.elapsed().as_millis();
-        let average_chunk_size =
-            chunks.iter().map(|chunk| chunk.data.len()).sum::<usize>() / chunks.len().max(1);
         eprintln!(
             "[perf][upgrade][chunk-build] file={} kind={:?} bytes={} chunks={} avgChunk={} ms={}",
             file.file_name,
@@ -1451,7 +1553,7 @@ where
             total_files,
             file,
             15,
-            format!("{} 擦除完成", file.file_name),
+            format!("{} 分包完成", file.file_name),
             Some(chunk_summary),
         );
         let mut last_reported_progress = 15u8;
@@ -1460,21 +1562,8 @@ where
         for (chunk_index, chunk) in chunks.iter().enumerate() {
             let (command, payload) = match kind {
                 UpgradeKind::Boot => (0xE1, chunk.data.clone()),
-                UpgradeKind::App => {
-                    if let Some(address) = chunk.address {
-                        let mut payload = address.to_be_bytes().to_vec();
-                        payload.extend_from_slice(&chunk.data);
-                        (0xA8, payload)
-                    } else {
-                        (0xA8, chunk.data.clone())
-                    }
-                }
-                UpgradeKind::Ui => {
-                    let address = chunk.address.unwrap_or_default();
-                    let mut payload = address.to_be_bytes().to_vec();
-                    payload.extend_from_slice(&chunk.data);
-                    (0xAA, payload)
-                }
+                UpgradeKind::App => (0xA8, build_app_write_payload(chunk, chunk_index, protocol)),
+                UpgradeKind::Ui => (0xAA, build_ui_write_payload(chunk, chunk_index, protocol)),
                 UpgradeKind::Config => unreachable!(),
             };
 
@@ -2621,8 +2710,47 @@ fn parse_upgrade_kind(text: &str) -> Result<UpgradeKind, String> {
     }
 }
 
-fn is_iot_protocol(protocol_type: u8) -> bool {
-    protocol_type == 0x09
+fn parse_upgrade_protocol(protocol_type: u8) -> UpgradeProtocol {
+    match protocol_type {
+        0x03 => UpgradeProtocol::GaoBiao,
+        0x05 => UpgradeProtocol::KaiYang,
+        0x09 => UpgradeProtocol::Iot,
+        _ => UpgradeProtocol::Default,
+    }
+}
+
+fn protocol_skips_app_erase(protocol: UpgradeProtocol) -> bool {
+    matches!(
+        protocol,
+        UpgradeProtocol::Iot | UpgradeProtocol::KaiYang | UpgradeProtocol::GaoBiao
+    )
+}
+
+fn protocol_skips_ui_erase(protocol: UpgradeProtocol) -> bool {
+    matches!(
+        protocol,
+        UpgradeProtocol::KaiYang | UpgradeProtocol::GaoBiao
+    )
+}
+
+fn uses_frame_number_app_payload(protocol: UpgradeProtocol) -> bool {
+    matches!(
+        protocol,
+        UpgradeProtocol::KaiYang | UpgradeProtocol::GaoBiao
+    )
+}
+
+fn uses_frame_number_ui_payload(protocol: UpgradeProtocol) -> bool {
+    matches!(protocol, UpgradeProtocol::KaiYang)
+}
+
+fn protocol_prep_label(protocol: UpgradeProtocol) -> &'static str {
+    match protocol {
+        UpgradeProtocol::Iot => "IOT 固件信息校验",
+        UpgradeProtocol::KaiYang => "开阳升级文件类型下发",
+        UpgradeProtocol::GaoBiao => "高标升级文件类型下发",
+        UpgradeProtocol::Default => "预处理",
+    }
 }
 
 fn pad_bytes_to_word(bytes: &[u8], fill: u8) -> Vec<u8> {
@@ -2738,7 +2866,11 @@ fn build_hex_firmware_bytes(data: &[u8]) -> Result<Vec<u8>, String> {
     Ok(image)
 }
 
-fn build_iot_firmware_info_payload(file_name: &str, data: &[u8]) -> Result<Vec<u8>, String> {
+fn build_iot_firmware_info_payload(
+    file_name: &str,
+    data: &[u8],
+    total_frames: usize,
+) -> Result<Vec<u8>, String> {
     let extension = Path::new(file_name)
         .extension()
         .and_then(|value| value.to_str())
@@ -2755,10 +2887,9 @@ fn build_iot_firmware_info_payload(file_name: &str, data: &[u8]) -> Result<Vec<u
         return Err("固件文件为空".to_string());
     }
 
-    let file_length = firmware_bytes.len() as u32;
     let crc = compute_crc8(&pad_bytes_to_word(&firmware_bytes, 0xFF));
     let mut payload = vec![crc];
-    payload.extend_from_slice(&file_length.to_be_bytes());
+    payload.extend_from_slice(&(total_frames as u32).to_be_bytes());
     Ok(payload)
 }
 
@@ -2766,9 +2897,10 @@ fn send_iot_firmware_info_command(
     manager: &SerialManager,
     file_name: &str,
     data: &[u8],
+    total_frames: usize,
     logs: &mut Vec<String>,
 ) -> Result<(), String> {
-    let payload = build_iot_firmware_info_payload(file_name, data)?;
+    let payload = build_iot_firmware_info_payload(file_name, data, total_frames)?;
     let response = manager.send_command(0x21, &payload, DEFAULT_TIMEOUT_MS)?;
     let response_payload = hex_to_bytes(&response.response_payload_hex)?;
     if response_payload.first().copied().unwrap_or_default() != 1 {
@@ -2776,11 +2908,164 @@ fn send_iot_firmware_info_command(
     }
 
     let crc = payload.first().copied().unwrap_or_default();
-    let file_length = u32::from_be_bytes([payload[1], payload[2], payload[3], payload[4]]);
+    let total_frames = u32::from_be_bytes([payload[1], payload[2], payload[3], payload[4]]);
     logs.push(format!(
-        "IOT 固件信息校验成功，CRC8=0x{crc:02X}，文件长度={file_length} 字节"
+        "IOT 固件信息校验成功，CRC8=0x{crc:02X}，总帧数={total_frames}"
     ));
     Ok(())
+}
+
+fn build_kaiyang_file_type_payload(
+    kind: UpgradeKind,
+    total_frames: usize,
+) -> Result<Vec<u8>, String> {
+    let file_type = match kind {
+        UpgradeKind::App => 3,
+        UpgradeKind::Ui => 1,
+        _ => return Err("开阳协议仅支持 APP/UI 文件类型下发".to_string()),
+    };
+    if total_frames > 0x00FF_FFFF {
+        return Err("开阳协议总帧数超出 3 字节范围".to_string());
+    }
+
+    Ok(vec![
+        file_type,
+        ((total_frames >> 16) & 0xFF) as u8,
+        ((total_frames >> 8) & 0xFF) as u8,
+        (total_frames & 0xFF) as u8,
+    ])
+}
+
+fn build_gaobiao_file_type_payload(kind: UpgradeKind) -> Result<Vec<u8>, String> {
+    let file_type = match kind {
+        UpgradeKind::App => 0,
+        UpgradeKind::Ui => 1,
+        _ => return Err("高标协议仅支持 APP/UI 文件类型下发".to_string()),
+    };
+    Ok(vec![file_type])
+}
+
+fn send_protocol_prepare_command(
+    manager: &SerialManager,
+    protocol: UpgradeProtocol,
+    kind: UpgradeKind,
+    file_name: &str,
+    data: &[u8],
+    total_frames: usize,
+    logs: &mut Vec<String>,
+) -> Result<(), String> {
+    match protocol {
+        UpgradeProtocol::Iot => {
+            send_iot_firmware_info_command(manager, file_name, data, total_frames, logs)
+        }
+        UpgradeProtocol::KaiYang => {
+            let payload = build_kaiyang_file_type_payload(kind, total_frames)?;
+            let response = manager.send_command(0x22, &payload, DEFAULT_TIMEOUT_MS)?;
+            let response_payload = hex_to_bytes(&response.response_payload_hex)?;
+            if response_payload.first().copied().unwrap_or_default() != 1 {
+                return Err("开阳升级文件类型下发失败".to_string());
+            }
+            logs.push(format!("开阳升级文件类型下发成功，总帧数={total_frames}"));
+            Ok(())
+        }
+        UpgradeProtocol::GaoBiao => {
+            let payload = build_gaobiao_file_type_payload(kind)?;
+            let response = manager.send_command(0x23, &payload, DEFAULT_TIMEOUT_MS)?;
+            let response_payload = hex_to_bytes(&response.response_payload_hex)?;
+            if response_payload.first().copied().unwrap_or_default() != 1 {
+                return Err("高标升级文件类型下发失败".to_string());
+            }
+            logs.push("高标升级文件类型下发成功".to_string());
+            Ok(())
+        }
+        UpgradeProtocol::Default => Ok(()),
+    }
+}
+
+fn build_app_frame_number_chunks(file_name: &str, data: &[u8]) -> Result<Vec<DataChunk>, String> {
+    let extension = Path::new(file_name)
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+
+    let bytes = match extension.as_str() {
+        "hex" => build_hex_firmware_bytes(data)?,
+        "bin" => data.to_vec(),
+        _ => return Err(format!("APP 文件格式不支持帧序号写入: {extension}")),
+    };
+
+    build_sequential_chunks(&bytes, 128, false)
+}
+
+fn build_ui_frame_number_chunks(file_name: &str, data: &[u8]) -> Result<Vec<DataChunk>, String> {
+    let extension = Path::new(file_name)
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+
+    let bytes = match extension.as_str() {
+        "txt" => parse_hex_text_bytes(data)?,
+        "bin" => data.to_vec(),
+        _ => return Err(format!("UI 文件格式不支持帧序号写入: {extension}")),
+    };
+
+    build_sequential_chunks(&bytes, 128, false)
+}
+
+fn build_realtime_chunks(
+    file_name: &str,
+    data: &[u8],
+    kind: UpgradeKind,
+    protocol: UpgradeProtocol,
+) -> Result<Vec<DataChunk>, String> {
+    match kind {
+        UpgradeKind::App if uses_frame_number_app_payload(protocol) => {
+            build_app_frame_number_chunks(file_name, data)
+        }
+        UpgradeKind::Ui if uses_frame_number_ui_payload(protocol) => {
+            build_ui_frame_number_chunks(file_name, data)
+        }
+        _ => build_chunks(file_name, data, kind),
+    }
+}
+
+fn build_app_write_payload(
+    chunk: &DataChunk,
+    chunk_index: usize,
+    protocol: UpgradeProtocol,
+) -> Vec<u8> {
+    if uses_frame_number_app_payload(protocol) {
+        let mut payload = (chunk_index as u32).to_be_bytes().to_vec();
+        payload.extend_from_slice(&chunk.data);
+        return payload;
+    }
+
+    if let Some(address) = chunk.address {
+        let mut payload = address.to_be_bytes().to_vec();
+        payload.extend_from_slice(&chunk.data);
+        return payload;
+    }
+
+    chunk.data.clone()
+}
+
+fn build_ui_write_payload(
+    chunk: &DataChunk,
+    chunk_index: usize,
+    protocol: UpgradeProtocol,
+) -> Vec<u8> {
+    if uses_frame_number_ui_payload(protocol) {
+        let mut payload = (chunk_index as u32).to_be_bytes().to_vec();
+        payload.extend_from_slice(&chunk.data);
+        return payload;
+    }
+
+    let address = chunk.address.unwrap_or_default();
+    let mut payload = address.to_be_bytes().to_vec();
+    payload.extend_from_slice(&chunk.data);
+    payload
 }
 
 fn build_chunks(file_name: &str, data: &[u8], kind: UpgradeKind) -> Result<Vec<DataChunk>, String> {

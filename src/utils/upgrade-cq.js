@@ -1,7 +1,7 @@
 const CQ_PREFIX = "CQ"
-const CQ_BODY_LENGTH = 8
-
-export const UPGRADE_CQ_PASSWORD = "dtkj2026"
+const LEGACY_CQ_BODY_LENGTH = 8
+const CQ_BODY_LENGTH = 9
+const DEFAULT_CQ_FILE_FORMAT = 0x01
 
 export const UPGRADE_COMM_TYPE_OPTIONS = [
   { label: "3.3V 串口", value: 0x00 },
@@ -84,7 +84,7 @@ export function getUpgradeFrameIdOptions(commType) {
         { label: "特殊帧ID", value: 0x02 },
       ]
     : [
-        { label: "默认帧ID", value: 0x01 },
+        { label: "串口默认", value: 0x00 },
       ]
 }
 
@@ -96,7 +96,8 @@ export function createDefaultUpgradeCqState() {
     powerVoltage: 0x00,
     vlk5vEnabled: 0x00,
     protocolType: 0x01,
-    frameId: 0x01,
+    fileFormat: DEFAULT_CQ_FILE_FORMAT,
+    frameId: 0x00,
     specialFrameValue: "",
   }
 }
@@ -136,7 +137,8 @@ function normalizeSpecialFrameValue(value) {
 }
 
 export function buildUpgradeCqCode(config, burnFileType) {
-  const frameId = Number(config.frameId ?? 0x01)
+  const isCan = Number(config.commType) === 0x02
+  const frameId = isCan ? Number(config.frameId ?? 0x01) : 0x00
   const frameType = Number(config.commType) === 0x02 ? Number(config.frameType ?? 0x01) : 0x00
   const body = [
     normalizeNibble(config.commType, "通讯类型"),
@@ -146,6 +148,7 @@ export function buildUpgradeCqCode(config, burnFileType) {
     normalizeNibble(config.vlk5vEnabled, "VLK5V 开关"),
     normalizeNibble(config.protocolType, "升级协议类型"),
     normalizeNibble(burnFileType, "烧录文件类型"),
+    normalizeNibble(config.fileFormat ?? DEFAULT_CQ_FILE_FORMAT, "文件格式"),
     normalizeNibble(frameId, "帧ID"),
   ].join("")
 
@@ -170,17 +173,34 @@ export function parseUpgradeCqCode(input) {
   }
 
   const bodyStart = CQ_PREFIX.length
-  const bodyEnd = bodyStart + CQ_BODY_LENGTH
-  const body = normalized.slice(bodyStart, bodyEnd)
-  if (body.length !== CQ_BODY_LENGTH) {
+  const body = normalized.slice(bodyStart).split("-")[0]
+  if (![LEGACY_CQ_BODY_LENGTH, CQ_BODY_LENGTH].includes(body.length)) {
     throw new Error("CQ 配置长度不正确")
   }
-  if (!/^[0-9A-F]{8}$/.test(body)) {
+  if (!new RegExp(`^[0-9A-F]{${body.length}}$`).test(body)) {
     throw new Error("CQ 配置格式不正确")
   }
 
+  const bodyEnd = bodyStart + body.length
   const suffixPart = normalized.slice(bodyEnd).replace(/^-/, "")
   const values = body.split("").map((item) => Number.parseInt(item, 16))
+
+  if (body.length === LEGACY_CQ_BODY_LENGTH) {
+    return {
+      cqCode: normalized,
+      commType: values[0],
+      baudCode: values[1],
+      frameType: values[2],
+      powerVoltage: values[3],
+      vlk5vEnabled: values[4],
+      protocolType: values[5],
+      burnFileType: values[6],
+      fileFormat: DEFAULT_CQ_FILE_FORMAT,
+      frameId: values[7],
+      specialFrameValue: normalizeSpecialFrameValue(suffixPart),
+    }
+  }
+
   return {
     cqCode: normalized,
     commType: values[0],
@@ -190,7 +210,8 @@ export function parseUpgradeCqCode(input) {
     vlk5vEnabled: values[4],
     protocolType: values[5],
     burnFileType: values[6],
-    frameId: values[7],
+    fileFormat: values[7],
+    frameId: values[8],
     specialFrameValue: normalizeSpecialFrameValue(suffixPart),
   }
 }

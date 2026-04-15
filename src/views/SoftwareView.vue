@@ -97,7 +97,7 @@
                 color="positive"
                 :label="t('software.local.startUpgrade')"
                 :loading="upgradeLoading"
-                :disable="!localFiles[item.kind].fileName || !sharedCqCode"
+                :disable="!localFiles[item.kind].fileName || !sharedCqCode || !isDeviceConnected"
                 @click="handleSingleLocalUpgrade(item.kind)"
               />
             </div>
@@ -241,6 +241,24 @@ const hasActiveLocalFiles = computed(() => localKindOrder.some((kind) => localFi
 const localSelectedCount = computed(() => localKindOrder.filter((kind) => localFiles[kind].isActive).length)
 const localReadyCount = computed(() => localKindOrder.filter((kind) => localFiles[kind].fileName).length)
 const sharedCqCode = computed(() => String(deviceStore.upgradeCqCode || "").trim().toUpperCase())
+const isDeviceConnected = computed(() => deviceStore.connectionStatus === "CONNECTED")
+
+async function refreshConnectionStatus() {
+  try {
+    await deviceStore.syncStatus()
+  } catch (_) {
+    // 状态刷新失败时沿用当前状态，避免覆盖主错误提示。
+  }
+}
+
+async function syncDisconnectedStateIfNeeded(error) {
+  const message = String(error?.message ?? error ?? "")
+  if (!message.includes("请先连接串口适配器") && !message.includes("串口连接已断开")) {
+    return
+  }
+
+  await refreshConnectionStatus()
+}
 
 function getUpgradeCommType() {
   return deviceStore.meterCommType === 0x02 ? 0x02 : 0x00
@@ -344,6 +362,9 @@ function setLocalFileInput(kind, element) {
 }
 
 function openLocalFile(kind) {
+  if (["app", "ui", "boot", "config"].includes(kind)) {
+    deviceStore.softwareUpgradeTargetKind = kind
+  }
   localInputs[kind]?.click()
 }
 
@@ -355,6 +376,9 @@ async function handleLocalFileChange(event, kind) {
   }
 
   try {
+    if (["app", "ui", "boot", "config"].includes(kind)) {
+      deviceStore.softwareUpgradeTargetKind = kind
+    }
     const prepared = await buildLocalFileEntry(file, kind)
     Object.assign(localFiles[kind], prepared, {
       isActive: true,
@@ -391,6 +415,12 @@ async function handleSingleLocalUpgrade(kind) {
     notifyError(t("software.local.errors.selectFileFirst"))
     return
   }
+  await refreshConnectionStatus()
+  if (!isDeviceConnected.value) {
+    notifyError("请先连接串口适配器")
+    return
+  }
+  deviceStore.softwareUpgradeTargetKind = kind
   if (!sharedCqCode.value) {
     notifyError("请先在左侧连接设备面板填写 CQ 配置串")
     return
@@ -449,6 +479,11 @@ async function runUpgrade(selectedFiles, groupState, sourceLabel) {
     notifyError(t("software.local.errors.selectFileFirst"))
     return
   }
+  await refreshConnectionStatus()
+  if (!isDeviceConnected.value) {
+    notifyError("请先连接串口适配器")
+    return
+  }
 
   currentLogKinds = selectedFiles.map((item) => item.kind)
   upgradeLoading.value = true
@@ -488,6 +523,7 @@ async function runUpgrade(selectedFiles, groupState, sourceLabel) {
 
     notifySuccess(operationState.stage || t("software.local.upgrade.completed"))
   } catch (error) {
+    await syncDisconnectedStateIfNeeded(error)
     operationState.stage = t("software.local.upgrade.failed")
     appendLogs([String(error)], currentLogKinds)
     notifyError(error)
