@@ -346,7 +346,7 @@ import { useRoute } from "vue-router"
 import { useQuasar } from "quasar"
 import { useI18n } from "vue-i18n"
 import { getCurrentWindow } from "@tauri-apps/api/window"
-import { frontendLog, queryModelConfigByComputerName, switchLanguage } from "@/api/unimaster"
+import { frontendLog, queryCommonDictType, queryModelConfigByComputerName, switchLanguage } from "@/api/unimaster"
 import { navSections } from "@/config/navigation"
 import { applyLocale, getCurrentLocale, getDeviceLanguageCode, getLocaleSwitchLabel, getTargetLocale } from "@/i18n"
 import { notifyError, notifyInfo, notifySuccess } from "@/services/ui"
@@ -416,6 +416,7 @@ const hiddenEntryClicks = ref(0)
 const cqGeneratorDialogOpen = ref(false)
 const cqGeneratorRestoring = ref(false)
 const panelCqSyncing = ref(false)
+const cqDictMap = ref(new Map())
 const cqGeneratorForm = reactive({
   burnFileType: 1,
   ...createDefaultUpgradeCqState(),
@@ -431,9 +432,10 @@ const cqTransportOptions = [
 const cqTransportMode = computed({
   get: () => (Number(cqGeneratorForm.commType) === 0x02 ? "can" : "uart"),
   set: (value) => {
+    const nextBaudOptions = value === "can" ? getDictDrivenBaudOptions(0x02) : getDictDrivenBaudOptions(0x00)
     if (value === "can") {
       cqGeneratorForm.commType = 0x02
-      if (!UPGRADE_CAN_BAUD_OPTIONS.some((item) => item.value === Number(cqGeneratorForm.baudCode))) {
+      if (!nextBaudOptions.some((item) => Number(item.value) === Number(cqGeneratorForm.baudCode))) {
         cqGeneratorForm.baudCode = 0x08
       }
       return
@@ -442,18 +444,18 @@ const cqTransportMode = computed({
     if (Number(cqGeneratorForm.commType) === 0x02) {
       cqGeneratorForm.commType = 0x00
     }
-    if (!UPGRADE_UART_BAUD_OPTIONS.some((item) => item.value === Number(cqGeneratorForm.baudCode))) {
+    if (!nextBaudOptions.some((item) => Number(item.value) === Number(cqGeneratorForm.baudCode))) {
       cqGeneratorForm.baudCode = 0x0B
     }
   },
 })
-const cqUartCommTypeOptions = UPGRADE_UART_COMM_TYPE_OPTIONS
-const cqBaudOptions = computed(() => getUpgradeBaudOptions(cqGeneratorForm.commType))
-const cqPowerVoltageOptions = UPGRADE_POWER_VOLTAGE_OPTIONS
-const cqVlk5vOptions = UPGRADE_VLK5V_OPTIONS
-const cqProtocolTypeOptions = UPGRADE_PROTOCOL_TYPE_OPTIONS
-const cqFrameTypeOptions = computed(() => getUpgradeFrameTypeOptions(cqGeneratorForm.commType))
-const cqFrameIdOptions = computed(() => getUpgradeFrameIdOptions(cqGeneratorForm.commType))
+const cqUartCommTypeOptions = computed(() => getDictDrivenCommTypeOptions())
+const cqBaudOptions = computed(() => getDictDrivenBaudOptions(cqGeneratorForm.commType))
+const cqPowerVoltageOptions = computed(() => getDictDrivenPlainOptions(4, UPGRADE_POWER_VOLTAGE_OPTIONS))
+const cqVlk5vOptions = computed(() => getDictDrivenPlainOptions(5, UPGRADE_VLK5V_OPTIONS))
+const cqProtocolTypeOptions = computed(() => getDictDrivenPlainOptions(6, UPGRADE_PROTOCOL_TYPE_OPTIONS))
+const cqFrameTypeOptions = computed(() => getDictDrivenFrameTypeOptions(cqGeneratorForm.commType))
+const cqFrameIdOptions = computed(() => getDictDrivenFrameIdOptions(cqGeneratorForm.commType))
 const cqGeneratorPreview = computed(() => {
   try {
     return buildUpgradeCqCode(cqGeneratorForm, cqGeneratorForm.burnFileType)
@@ -483,6 +485,95 @@ function logStartupPerf(stage, details = {}) {
   frontendLog("info", message).catch(() => {})
 }
 
+function normalizeDictOptions(rawOptions) {
+  if (!Array.isArray(rawOptions)) {
+    return []
+  }
+
+  return rawOptions
+    .map((item) => ({
+      label: String(item?.label || "").trim(),
+      value: Number(item?.value),
+      type: String(item?.type || "").trim().toLowerCase(),
+    }))
+    .filter((item) => item.label && Number.isFinite(item.value))
+}
+
+function parseDictRemark(remark) {
+  if (!String(remark || "").trim()) {
+    return []
+  }
+
+  try {
+    return normalizeDictOptions(JSON.parse(String(remark)))
+  } catch (error) {
+    console.warn("[cq-dict] 解析字典 remark 失败", remark, error)
+    return []
+  }
+}
+
+function getDictOptionsByValue(dictValue) {
+  return cqDictMap.value.get(Number(dictValue)) || []
+}
+
+function getDictDrivenCommTypeOptions() {
+  const options = getDictOptionsByValue(1)
+  return options.length ? options.filter((item) => Number(item.value) !== 0x02) : UPGRADE_UART_COMM_TYPE_OPTIONS
+}
+
+function getDictDrivenBaudOptions(commType) {
+  const options = getDictOptionsByValue(2)
+  if (!options.length) {
+    return getUpgradeBaudOptions(commType)
+  }
+
+  const targetType = Number(commType) === 0x02 ? "can" : "uart"
+  const filtered = options.filter((item) => item.type === targetType)
+  return filtered.length ? filtered : getUpgradeBaudOptions(commType)
+}
+
+function getDictDrivenFrameTypeOptions(commType) {
+  const options = getDictOptionsByValue(3)
+  if (!options.length) {
+    return getUpgradeFrameTypeOptions(commType)
+  }
+
+  const targetType = Number(commType) === 0x02 ? "can" : "uart"
+  const filtered = options.filter((item) => item.type === targetType)
+  return filtered.length ? filtered : getUpgradeFrameTypeOptions(commType)
+}
+
+function getDictDrivenPlainOptions(dictValue, fallbackOptions) {
+  const options = getDictOptionsByValue(dictValue)
+  return options.length ? options.map(({ label, value }) => ({ label, value })) : fallbackOptions
+}
+
+function getDictDrivenFrameIdOptions(commType) {
+  if (Number(commType) !== 0x02) {
+    return [{ label: "串口默认", value: 0x00 }]
+  }
+
+  return getDictDrivenPlainOptions(8, getUpgradeFrameIdOptions(commType))
+}
+
+async function loadUpgradeCqDict() {
+  try {
+    const dictRows = await queryCommonDictType("dt_upgrade_cq_config")
+    const nextMap = new Map()
+
+    dictRows
+      .slice()
+      .sort((left, right) => Number(left?.dictValue) - Number(right?.dictValue))
+      .forEach((row) => {
+        nextMap.set(Number(row?.dictValue), parseDictRemark(row?.remark))
+      })
+
+    cqDictMap.value = nextMap
+  } catch (error) {
+    console.warn("[cq-dict] 读取字典失败，继续使用本地默认配置", error)
+  }
+}
+
 function applyParsedCqToDevice(parsedCq) {
   const isCan = Number(parsedCq.commType) === 0x02
   const nextCommType = isCan ? 0x02 : 0x01
@@ -497,7 +588,7 @@ function applyParsedCqToDevice(parsedCq) {
 }
 
 function syncDeviceConfigWithCqCode(input, options = {}) {
-  const { notifyOnError = false } = options
+  const { notifyOnError = false, syncTransport = !isSoftwareRoute.value } = options
   const normalized = String(input || "").trim().toUpperCase()
 
   deviceStore.setUpgradeCqCode(normalized)
@@ -507,7 +598,9 @@ function syncDeviceConfigWithCqCode(input, options = {}) {
 
   try {
     const parsedCq = parseUpgradeCqCode(normalized)
-    applyParsedCqToDevice(parsedCq)
+    if (syncTransport) {
+      applyParsedCqToDevice(parsedCq)
+    }
     return true
   } catch (error) {
     if (notifyOnError) {
@@ -827,6 +920,7 @@ onMounted(async () => {
   logStartupPerf("mount-start", { route: route.path })
 
   try {
+    await loadUpgradeCqDict()
     const portsTaskStartedAt = getPerfNow()
     const refreshPortsTask = deviceStore.refreshPorts().then((ports) => {
       logStartupPerf("refresh-ports-ok", {

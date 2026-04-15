@@ -119,7 +119,9 @@ import {
   loadProgramBurningBundle,
   performRealtimeUpgrade,
   prepareOfflineUpgrade,
+  queryModelConfigByComputerName,
 } from "@/api/unimaster"
+import { buildUpgradeCqStateFromModelConfig } from "@/utils/model-config"
 import { prepareMeterConfigUpgradeFile } from "@/utils/unimaster-config"
 import {
   buildUpgradeCqCode,
@@ -297,10 +299,43 @@ function logRealtimeInitPreview(request) {
   })
 }
 
-function buildRealtimeInitRequest(file) {
+async function resolveRealtimeUpgradeConfig(file) {
   const parsedCq = parseUpgradeCqCode(sharedCqCode.value)
   const burnFileType = getUpgradeBurnFileType(file.kind)
-  const resolvedCqCode = buildUpgradeCqCode(parsedCq, burnFileType)
+  const modelName = String(onlineBundle.computerName || realtimeForm.model || deviceStore.currentModel || "UniMaster").trim().toUpperCase()
+
+  try {
+    const modelConfig = await queryModelConfigByComputerName(modelName)
+    if (!modelConfig) {
+      return { parsedCq, burnFileType, resolvedCqCode: buildUpgradeCqCode(parsedCq, burnFileType) }
+    }
+
+    const profileState = buildUpgradeCqStateFromModelConfig(modelConfig, {
+      transportProfile: "boot",
+      burnFileType,
+    })
+    if (!profileState) {
+      return { parsedCq, burnFileType, resolvedCqCode: buildUpgradeCqCode(parsedCq, burnFileType) }
+    }
+
+    const mergedState = {
+      ...profileState,
+      specialFrameValue: profileState.specialFrameValue || parsedCq.specialFrameValue,
+    }
+
+    return {
+      parsedCq: mergedState,
+      burnFileType,
+      resolvedCqCode: buildUpgradeCqCode(mergedState, burnFileType),
+    }
+  } catch (error) {
+    console.warn("[upgrade][model-config] 使用型号配置失败，回退到 CQ 解析", error)
+    return { parsedCq, burnFileType, resolvedCqCode: buildUpgradeCqCode(parsedCq, burnFileType) }
+  }
+}
+
+async function buildRealtimeInitRequest(file) {
+  const { parsedCq, burnFileType, resolvedCqCode } = await resolveRealtimeUpgradeConfig(file)
 
   return {
     ...realtimeForm,
@@ -529,16 +564,18 @@ async function runUpgrade(selectedFiles, groupState, sourceLabel) {
 
   try {
     const files = await toUpgradeFiles(selectedFiles)
-    files.forEach((file) => {
-      const request = buildRealtimeInitRequest(file)
+
+    for (const file of files) {
+      const request = await buildRealtimeInitRequest(file)
       appendLogs([`使用 CQ 配置：${request.cqCode}`], [file.kind])
+      appendLogs([`升级协议类型：0x${toHexByte(request.protocolType)}`], [file.kind])
       logRealtimeInitPreview(request)
-    })
+    }
 
     for (const [index, file] of files.entries()) {
       const initRequest = buildRealtimeInitRequest(file)
       const result = await performRealtimeUpgrade({
-        init: initRequest,
+        init: await initRequest,
         files: [file],
       })
 

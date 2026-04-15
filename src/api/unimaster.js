@@ -92,6 +92,32 @@ export async function queryModelConfigByComputerName(computerName) {
   return payload?.data ?? null
 }
 
+export async function queryCommonDictType(dictType) {
+  const normalizedDictType = String(dictType || "").trim()
+  if (!normalizedDictType) {
+    throw new Error("请输入字典类型")
+  }
+
+  const url = `${MODEL_QUERY_BASE_URL}/common/type/${encodeURIComponent(normalizedDictType)}`
+  const response = await fetch(url, {
+    method: "GET",
+    headers: {
+      Accept: "application/json",
+    },
+  })
+
+  if (!response.ok) {
+    throw new Error(`字典查询失败，状态码 ${response.status}`)
+  }
+
+  const payload = await response.json()
+  if (Number(payload?.code) !== 200) {
+    throw new Error(String(payload?.msg || "字典查询返回异常"))
+  }
+
+  return Array.isArray(payload?.data) ? payload.data : []
+}
+
 export function setMeterConfigTransport(request) {
   return invoke("set_meter_config_transport", { request })
 }

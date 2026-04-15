@@ -1182,13 +1182,13 @@ pub fn set_realtime_screen(manager: &SerialManager, screen: u8) -> Result<Simple
 pub fn read_access_state(manager: &SerialManager) -> Result<SimpleResult, String> {
     let response = manager.send_command(0x20, &[], DEFAULT_TIMEOUT_MS)?;
     let payload = hex_to_bytes(&response.response_payload_hex)?;
-    let message = match payload.first().copied().unwrap_or(0xFF) {
-        0x01 => "仪表已接入",
+    let status = payload.first().copied().unwrap_or(0xFF);
+    let message = match status {
         0x00 => "检测超时，请重新插拔仪表",
-        _ => "未接入仪表",
+        _ => "仪表已接入",
     };
     Ok(SimpleResult {
-        success: payload.first().copied().unwrap_or_default() == 0x01,
+        success: status != 0x00,
         message: message.to_string(),
     })
 }
