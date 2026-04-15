@@ -76,9 +76,8 @@ jobs:
             throw new Error("TAURI_SIGNING_PRIVATE_KEY is not a valid minisign secret key. Store the raw key text or its base64-encoded content in GitHub Secrets.")
           }
 
-          const encodedKey = Buffer.from(decodedKey, "utf8").toString("base64")
           const envFile = process.env.GITHUB_ENV
-          fs.appendFileSync(envFile, `TAURI_SIGNING_PRIVATE_KEY<<__TAURI_KEY__\n${encodedKey}\n__TAURI_KEY__\n`)
+          fs.appendFileSync(envFile, `TAURI_SIGNING_PRIVATE_KEY<<__TAURI_KEY__\n${decodedKey}\n__TAURI_KEY__\n`)
           fs.appendFileSync(envFile, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD<<__TAURI_PASSWORD__\n${rawPassword}\n__TAURI_PASSWORD__\n`)
           NODE
       - run: pnpm tauri build --target x86_64-pc-windows-msvc --bundles nsis
