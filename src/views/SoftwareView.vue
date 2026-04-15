@@ -264,6 +264,39 @@ function getUpgradeCommType() {
   return deviceStore.meterCommType === 0x02 ? 0x02 : 0x00
 }
 
+function toHexByte(value) {
+  return Number(value).toString(16).toUpperCase().padStart(2, "0")
+}
+
+function getPrintableByte(value) {
+  const normalized = Number(value)
+  return normalized >= 0x20 && normalized <= 0x7E ? String.fromCharCode(normalized) : "?"
+}
+
+function buildRealtimeInitPreviewFrame(request) {
+  const combinedCqCode = `${String(request.model || "").trim().toUpperCase()}_${String(request.cqCode || "").trim().toUpperCase()}`
+  const payload = Array.from(combinedCqCode).map((char) => char.charCodeAt(0))
+
+  const frame = [0x55, 0xA6, payload.length, ...payload]
+  const checksum = frame.reduce((acc, value) => acc ^ value, 0)
+  frame.push(checksum)
+
+  return {
+    combinedCqCode,
+    frame,
+  }
+}
+
+function logRealtimeInitPreview(request) {
+  const { combinedCqCode, frame } = buildRealtimeInitPreviewFrame(request)
+  console.log("[serial][55][tx-preview][cmd=0xA6] model_cq =", combinedCqCode)
+  console.log("[serial][55][tx-preview][cmd=0xA6]", frame.map((value) => toHexByte(value)).join(" "))
+  console.log(`[serial][55][tx-preview][cmd=0xA6] len=${frame.length}`)
+  frame.forEach((value, index) => {
+    console.log(`[serial][55][tx-preview][cmd=0xA6][${index}] 0x${toHexByte(value)} '${getPrintableByte(value)}'`)
+  })
+}
+
 function buildRealtimeInitRequest(file) {
   const parsedCq = parseUpgradeCqCode(sharedCqCode.value)
   const burnFileType = getUpgradeBurnFileType(file.kind)
@@ -499,11 +532,13 @@ async function runUpgrade(selectedFiles, groupState, sourceLabel) {
     files.forEach((file) => {
       const request = buildRealtimeInitRequest(file)
       appendLogs([`使用 CQ 配置：${request.cqCode}`], [file.kind])
+      logRealtimeInitPreview(request)
     })
 
     for (const [index, file] of files.entries()) {
+      const initRequest = buildRealtimeInitRequest(file)
       const result = await performRealtimeUpgrade({
-        init: buildRealtimeInitRequest(file),
+        init: initRequest,
         files: [file],
       })
 

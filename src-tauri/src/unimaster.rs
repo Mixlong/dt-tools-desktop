@@ -671,9 +671,7 @@ impl SerialManager {
                     port_name, error
                 );
                 *guard = None;
-                return Err(format!(
-                    "串口连接已断开，请重新连接设备后重试: {error}"
-                ));
+                return Err(format!("串口连接已断开，请重新连接设备后重试: {error}"));
             }
         }
 
@@ -693,6 +691,7 @@ impl SerialManager {
                     "[serial][55][tx][cmd=0x{command:02X}] {}",
                     bytes_to_hex(&request)
                 );
+                trace_indexed_frame(command, &request);
             }
             port.clear(ClearBuffer::All).ok();
             port.write_all(&request)
@@ -734,6 +733,7 @@ impl SerialManager {
                     "[serial][55][tx][cmd=0x{command:02X}] {}",
                     bytes_to_hex(&request)
                 );
+                trace_indexed_frame(command, &request);
             }
             if clear_before_send {
                 port.clear(ClearBuffer::All).ok();
@@ -1226,8 +1226,7 @@ pub fn init_realtime_upgrade(
             format!("实时烧录参数初始化成功（{}）", detail)
         } else {
             format!("实时烧录参数初始化失败（{}）", detail)
-        }
-        ,
+        },
     })
 }
 
@@ -2443,23 +2442,18 @@ fn build_upgrade_param_payload(request: &RealtimeInitRequest) -> Result<Vec<u8>,
 
     if matches!(burn_file_type, 1 | 2) {
         let cq_code = maybe_cq_code.ok_or_else(|| "APP/UI 升级缺少 CQ 配置串".to_string())?;
-        let cq_bytes = cq_code.as_bytes();
-        if cq_bytes.len() > u8::MAX as usize {
-            return Err("CQ 配置串过长".to_string());
+        let model = request.model.trim();
+        if model.is_empty() {
+            return Err("APP/UI 升级缺少型号".to_string());
         }
 
-        let mut payload = vec![
-            request.comm_type,
-            request.baud_code,
-            request.frame_type,
-            request.power_voltage,
-            if request.vlk5v_enabled { 1 } else { 0 },
-            request.protocol_type,
-            burn_file_type,
-            request.frame_id.unwrap_or(0),
-        ];
-        payload.extend_from_slice(cq_bytes);
-        return Ok(payload);
+        let combined_cq_code = format!("{}_{}", model.to_ascii_uppercase(), cq_code);
+        let cq_bytes = combined_cq_code.as_bytes();
+        if cq_bytes.len() > u8::MAX as usize {
+            return Err("型号 + CQ 配置串过长".to_string());
+        }
+
+        return Ok(cq_bytes.to_vec());
     }
 
     let file_name = request
@@ -2688,6 +2682,31 @@ fn bytes_to_hex(bytes: &[u8]) -> String {
         .map(|value| format!("{value:02X}"))
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+fn printable_byte_label(value: u8) -> char {
+    if value.is_ascii_graphic() || value == b' ' {
+        value as char
+    } else {
+        '?'
+    }
+}
+
+fn trace_indexed_frame(command: u8, frame: &[u8]) {
+    if command != 0xA6 {
+        return;
+    }
+
+    eprintln!(
+        "[serial][55][tx-index][cmd=0x{command:02X}] len={}",
+        frame.len()
+    );
+    for (index, value) in frame.iter().enumerate() {
+        eprintln!(
+            "[serial][55][tx-index][cmd=0x{command:02X}][{index}] 0x{value:02X} '{}'",
+            printable_byte_label(*value)
+        );
+    }
 }
 
 fn hex_to_bytes(text: &str) -> Result<Vec<u8>, String> {
