@@ -11,6 +11,7 @@
     "dev:desktop": "tauri dev",
     "build": "vite build",
     "build:desktop": "tauri build",
+    "build:desktop:test": "tauri build --config src-tauri/tauri.test.conf.json",
     "tauri": "tauri",
     "preview": "vite preview"
   },
