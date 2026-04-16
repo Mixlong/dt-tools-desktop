@@ -40,6 +40,8 @@ jobs:
         run: |
           node <<'NODE'
           const fs = require("fs")
+          const os = require("os")
+          const path = require("path")
 
           const rawKey = process.env.TAURI_SIGNING_PRIVATE_KEY_INPUT || ""
           const rawPassword = process.env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD_INPUT || ""
@@ -53,6 +55,7 @@ jobs:
           }
 
           let normalizedKey = rawKey.trim().replace(/\r\n/g, "\n")
+          const normalizedPassword = rawPassword.replace(/\r\n/g, "\n").replace(/\n+$/g, "")
 
           if (!normalizedKey.includes("\n") && normalizedKey.includes("\\n")) {
             normalizedKey = normalizedKey.replace(/\\n/g, "\n")
@@ -77,9 +80,13 @@ jobs:
             throw new Error("TAURI_SIGNING_PRIVATE_KEY is not a valid minisign secret key. Store the raw key text or its base64-encoded content in GitHub Secrets.")
           }
 
+          const keyFile = path.join(os.tmpdir(), "tauri-signing.key")
+          fs.writeFileSync(keyFile, Buffer.from(encodedKey, "base64").toString("utf8"), "utf8")
+
           const envFile = process.env.GITHUB_ENV
           fs.appendFileSync(envFile, `TAURI_SIGNING_PRIVATE_KEY=${encodedKey}\n`)
-          fs.appendFileSync(envFile, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD<<__TAURI_PASSWORD__\n${rawPassword}\n__TAURI_PASSWORD__\n`)
+          fs.appendFileSync(envFile, `TAURI_SIGNING_PRIVATE_KEY_PATH=${keyFile}\n`)
+          fs.appendFileSync(envFile, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD<<__TAURI_PASSWORD__\n${normalizedPassword}\n__TAURI_PASSWORD__\n`)
           NODE
       - run: pnpm tauri build --bundles app,dmg
       - uses: actions/upload-artifact@v4
