@@ -213,14 +213,32 @@
                 </div>
 
                 <div class="device-connect-panel__version">
-                  <span>v{{ currentAppVersion }}</span>
+                  <div class="device-connect-panel__version-badge">
+                    <span>v{{ displayedAppVersion }}</span>
+                    <q-btn
+                      flat
+                      round
+                      dense
+                      size="11px"
+                      icon="refresh"
+                      class="device-connect-panel__version-refresh"
+                      :loading="versionRefreshing"
+                      @click="refreshRemoteVersion"
+                    />
+                  </div>
                 </div>
 
                 <div class="device-connect-panel__actions">
                   <q-btn class="device-connect-panel__action-secondary" color="white" text-color="black" :label="t('layout.device.refreshPorts')" @click="refreshPorts" />
                   <q-btn
-                    class="device-connect-panel__action-primary"
-                    color="primary"
+                    :class="[
+                      'device-connect-panel__action-primary',
+                      {
+                        'device-connect-panel__action-primary--disconnect': deviceStore.connectionStatus === 'CONNECTED',
+                        'device-connect-panel__action-primary--connect': deviceStore.connectionStatus !== 'CONNECTED',
+                      },
+                    ]"
+                    :color="deviceStore.connectionStatus === 'CONNECTED' ? 'negative' : 'primary'"
                     push
                     :loading="connecting"
                     :label="deviceStore.connectionStatus === 'CONNECTED' ? t('layout.device.disconnectDevice') : t('layout.device.connectDevice')"
@@ -355,6 +373,7 @@ import { navSections } from "@/config/navigation"
 import { applyLocale, getCurrentLocale, getDeviceLanguageCode, getLocaleSwitchLabel, getTargetLocale } from "@/i18n"
 import { notifyError, notifyInfo, notifySuccess } from "@/services/ui"
 import { useDeviceStore } from "@/store/device"
+import { getRemoteAppVersion } from "@/updater"
 import { saveThemeMode } from "@/utils/preferences"
 import { applyThemeMode } from "@/utils/theme"
 import tauriConfig from "../../src-tauri/tauri.conf.json"
@@ -394,6 +413,8 @@ const logoImage = computed(() => ($q.dark.isActive ? darkLogoImage : lightLogoIm
 const themeToggleIcon = computed(() => (currentThemeMode.value === "dark" ? "light_mode" : "dark_mode"))
 const themeToggleLabel = computed(() => (currentThemeMode.value === "dark" ? "浅色模式" : "深色模式"))
 const currentAppVersion = String(tauriConfig?.version || "0.1.0")
+const displayedAppVersion = ref(currentAppVersion)
+const versionRefreshing = ref(false)
 const resolvedRouteTitle = computed(() => {
   if (route.meta?.titleKey) {
     return t(route.meta.titleKey)
@@ -836,6 +857,27 @@ async function copyCqCode() {
     notifySuccess("CQ 配置串已复制")
   } catch (error) {
     notifyError(error)
+  }
+}
+
+async function refreshRemoteVersion() {
+  if (versionRefreshing.value) {
+    return
+  }
+
+  versionRefreshing.value = true
+  try {
+    const remoteVersion = await getRemoteAppVersion()
+    displayedAppVersion.value = String(remoteVersion || currentAppVersion)
+    if (displayedAppVersion.value === currentAppVersion) {
+      notifyInfo(`当前已是最新版本 v${currentAppVersion}`)
+    } else {
+      notifySuccess(`检测到远程版本 v${displayedAppVersion.value}`)
+    }
+  } catch (error) {
+    notifyError(error)
+  } finally {
+    versionRefreshing.value = false
   }
 }
 
@@ -1454,107 +1496,6 @@ async function toggleConnection() {
   margin-top: 14px;
 }
 
-.sidebar-version-card {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  padding: 12px 14px;
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--dt-gloss-surface) 92%, white 8%);
-  border: 1px solid var(--dt-gloss-border);
-  box-shadow:
-    var(--dt-gloss-inset),
-    var(--dt-shadow-panel);
-}
-
-.sidebar-version-card__head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.sidebar-version-card__heading h3 {
-  margin: 0;
-  font-size: 14px;
-  line-height: 1.2;
-  font-weight: 800;
-  color: var(--dt-text-primary);
-}
-
-.sidebar-version-card__heading p {
-  margin: 4px 0 0;
-  font-size: 11px;
-  line-height: 1.4;
-  color: var(--dt-text-secondary);
-}
-
-.sidebar-version-card__refresh {
-  color: var(--dt-text-secondary);
-  background: color-mix(in srgb, var(--dt-bg-panel) 72%, transparent);
-  border: 1px solid color-mix(in srgb, var(--dt-border) 90%, transparent);
-}
-
-.sidebar-version-card__rows {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.sidebar-version-card__row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 8px 10px;
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--dt-bg-panel) 68%, transparent);
-  border: 1px solid color-mix(in srgb, var(--dt-border) 75%, transparent);
-}
-
-.sidebar-version-card__row span {
-  font-size: 12px;
-  color: var(--dt-text-secondary);
-}
-
-.sidebar-version-card__row strong {
-  font-size: 12px;
-  font-weight: 800;
-  color: var(--dt-text-primary);
-}
-
-.sidebar-version-card__action {
-  font-weight: 800;
-  border-radius: var(--dt-radius-button);
-}
-
-:global(html[data-theme="dark"]) .sidebar-version-card,
-:global(html.theme-dark) .sidebar-version-card,
-:global(body.body--dark) .sidebar-version-card,
-:global(body.theme-dark) .sidebar-version-card,
-:global(body[data-theme="dark"]) .sidebar-version-card {
-  background: linear-gradient(180deg, rgba(29, 26, 42, 0.96), rgba(20, 18, 31, 0.94));
-  border-color: rgba(255, 255, 255, 0.1);
-}
-
-:global(html[data-theme="dark"]) .sidebar-version-card__refresh,
-:global(html.theme-dark) .sidebar-version-card__refresh,
-:global(body.body--dark) .sidebar-version-card__refresh,
-:global(body.theme-dark) .sidebar-version-card__refresh,
-:global(body[data-theme="dark"]) .sidebar-version-card__refresh {
-  background: rgba(255, 255, 255, 0.04);
-  border-color: rgba(255, 255, 255, 0.1);
-}
-
-:global(html[data-theme="dark"]) .sidebar-version-card__row,
-:global(html.theme-dark) .sidebar-version-card__row,
-:global(body.body--dark) .sidebar-version-card__row,
-:global(body.theme-dark) .sidebar-version-card__row,
-:global(body[data-theme="dark"]) .sidebar-version-card__row {
-  background: rgba(255, 255, 255, 0.03);
-  border-color: rgba(255, 255, 255, 0.08);
-}
-
 .device-dock {
   padding-top: 18px;
   border-top: 0;
@@ -1589,8 +1530,8 @@ async function toggleConnection() {
   flex-direction: column;
   gap: 0;
   padding: 14px;
-  min-height: 436px;
-  height: 436px;
+  min-height: 0;
+  height: auto;
   border-radius: 12px;
   background: var(--dt-gloss-surface);
   border: 1px solid var(--dt-gloss-border);
@@ -1656,6 +1597,42 @@ async function toggleConnection() {
   padding: 0 0 12px;
 }
 
+.device-connect-panel__version {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  padding: 4px 0 10px;
+}
+
+.device-connect-panel__version-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 104px;
+  padding: 4px 8px 4px 12px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--dt-bg-panel) 72%, white 28%);
+  border: 1px solid color-mix(in srgb, var(--dt-border) 86%, transparent);
+}
+
+.device-connect-panel__version span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  line-height: 1;
+  font-weight: 800;
+  color: var(--dt-text-secondary);
+}
+
+.device-connect-panel__version-refresh {
+  color: var(--dt-text-secondary);
+  min-width: 22px;
+  min-height: 22px;
+}
+
 .device-connect-panel__actions {
   display: flex;
   align-items: center;
@@ -1680,6 +1657,16 @@ async function toggleConnection() {
 
 .device-connect-panel__actions :deep(.device-connect-panel__action-primary) {
   color: #fff !important;
+}
+
+.device-connect-panel__actions :deep(.device-connect-panel__action-primary.device-connect-panel__action-primary--disconnect) {
+  background: linear-gradient(135deg, #ff7a7a, #ef4444) !important;
+  border-color: rgba(239, 68, 68, 0.42) !important;
+  box-shadow: 0 12px 28px rgba(239, 68, 68, 0.28) !important;
+}
+
+.device-connect-panel__actions :deep(.device-connect-panel__action-primary.device-connect-panel__action-primary--disconnect:hover) {
+  background: linear-gradient(135deg, #ff8d8d, #f05252) !important;
 }
 
 :global(html[data-theme="dark"]) .device-connect-panel__actions :deep(.device-connect-panel__action-secondary),
@@ -1712,6 +1699,17 @@ async function toggleConnection() {
   box-shadow: 0 12px 28px rgba(78, 89, 214, 0.28) !important;
 }
 
+:global(html[data-theme="dark"]) .device-connect-panel__actions :deep(.device-connect-panel__action-primary.device-connect-panel__action-primary--disconnect),
+:global(html.theme-dark) .device-connect-panel__actions :deep(.device-connect-panel__action-primary.device-connect-panel__action-primary--disconnect),
+:global(body.body--dark) .device-connect-panel__actions :deep(.device-connect-panel__action-primary.device-connect-panel__action-primary--disconnect),
+:global(body.theme-dark) .device-connect-panel__actions :deep(.device-connect-panel__action-primary.device-connect-panel__action-primary--disconnect),
+:global(body[data-theme="dark"]) .device-connect-panel__actions :deep(.device-connect-panel__action-primary.device-connect-panel__action-primary--disconnect) {
+  background: linear-gradient(135deg, rgba(255, 122, 122, 0.96), rgba(220, 38, 38, 0.92)) !important;
+  border: 1px solid rgba(255, 160, 160, 0.22) !important;
+  color: #ffffff !important;
+  box-shadow: 0 12px 28px rgba(220, 38, 38, 0.3) !important;
+}
+
 :global(html[data-theme="dark"]) .device-connect-panel__actions :deep(.q-btn.q-btn--disabled),
 :global(html.theme-dark) .device-connect-panel__actions :deep(.q-btn.q-btn--disabled),
 :global(body.body--dark) .device-connect-panel__actions :deep(.q-btn.q-btn--disabled),
@@ -1733,6 +1731,28 @@ async function toggleConnection() {
 :global(body.theme-dark) .device-connect-panel__actions :deep(.device-connect-panel__action-secondary.q-btn--disabled .q-btn__content),
 :global(body[data-theme="dark"]) .device-connect-panel__actions :deep(.device-connect-panel__action-secondary.q-btn--disabled .q-btn__content) {
   color: rgba(45, 52, 70, 0.4) !important;
+}
+
+:global(html[data-theme="dark"]) .device-connect-panel__version-badge,
+:global(html.theme-dark) .device-connect-panel__version-badge,
+:global(body.body--dark) .device-connect-panel__version-badge,
+:global(body.theme-dark) .device-connect-panel__version-badge,
+:global(body[data-theme="dark"]) .device-connect-panel__version-badge {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+:global(html[data-theme="dark"]) .device-connect-panel__version span,
+:global(html.theme-dark) .device-connect-panel__version span,
+:global(body.body--dark) .device-connect-panel__version span,
+:global(body.theme-dark) .device-connect-panel__version span,
+:global(body[data-theme="dark"]) .device-connect-panel__version span,
+:global(html[data-theme="dark"]) .device-connect-panel__version-refresh,
+:global(html.theme-dark) .device-connect-panel__version-refresh,
+:global(body.body--dark) .device-connect-panel__version-refresh,
+:global(body.theme-dark) .device-connect-panel__version-refresh,
+:global(body[data-theme="dark"]) .device-connect-panel__version-refresh {
+  color: rgba(237, 242, 255, 0.9);
 }
 
 .device-connect-panel__actions > :deep(.q-btn) {

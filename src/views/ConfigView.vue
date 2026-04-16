@@ -27,7 +27,7 @@
             </div>
           </section>
 
-          <section v-if="debugLogs.length && canDisplayConfig" class="config-debug">
+          <section v-if="debugLogs.length && canDisplayConfig && !isDeviceConnected" class="config-debug">
             <div class="config-debug__header">
               <span>链路日志</span>
               <q-btn flat dense no-caps color="primary" label="清空" @click="clearDebugLogs" />
@@ -1384,6 +1384,8 @@ function setSectionRef(groupKey, el) {
   display: grid;
   width: 100%;
   min-height: clamp(196px, 24vh, 300px);
+  max-width: 1120px;
+  margin: 0 auto;
 }
 
 .config-empty__panel-stage > .config-empty__content,
@@ -1412,7 +1414,7 @@ function setSectionRef(groupKey, el) {
 .config-empty h3 {
   margin: 0;
   min-height: 86px;
-  max-width: 640px;
+  max-width: min(100%, 1100px);
   color: var(--dt-text-primary);
   font-size: clamp(28px, 2.8vw, 36px);
   font-weight: 800;
@@ -1422,9 +1424,11 @@ function setSectionRef(groupKey, el) {
 .config-empty__description {
   margin: 0;
   min-height: 84px;
+  max-width: min(100%, 1200px);
   color: var(--dt-text-secondary);
   font-size: 15px;
   line-height: 1.8;
+  text-wrap: pretty;
 }
 
 .config-empty__terminal {
@@ -1439,11 +1443,22 @@ function setSectionRef(groupKey, el) {
   border: 1px solid color-mix(in srgb, var(--dt-border) 86%, transparent);
   background: linear-gradient(180deg, color-mix(in srgb, var(--dt-bg-panel) 96%, transparent), color-mix(in srgb, var(--dt-bg-panel) 90%, transparent));
   box-shadow: var(--dt-shadow-panel);
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(28px) scale(0.988);
+  filter: blur(4px);
+  pointer-events: none;
+  align-self: stretch;
+  transition:
+    opacity 0.32s ease,
+    transform 0.46s cubic-bezier(0.22, 1, 0.36, 1),
+    filter 0.32s ease,
+    visibility 0s linear 0.32s;
 }
 
 .config-empty__panel-stage > .config-empty__content {
   width: 100%;
-  max-width: 720px;
+  max-width: 1200px;
   justify-self: center;
 }
 
@@ -1451,7 +1466,17 @@ function setSectionRef(groupKey, el) {
   opacity: 0;
   transform: translateY(-16px) scale(0.992);
   filter: blur(2px);
+  visibility: hidden;
   pointer-events: none;
+}
+
+.config-empty__terminal--active {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0) scale(1);
+  filter: blur(0);
+  pointer-events: auto;
+  transition-delay: 0.04s, 0.04s, 0.04s, 0s;
 }
 
 .config-empty__terminal-header {

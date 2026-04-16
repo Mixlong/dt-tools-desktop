@@ -20,7 +20,10 @@ const THREE_A_END_1: u8 = 0x0D;
 const THREE_A_END_2: u8 = 0x0A;
 const DEFAULT_TIMEOUT_MS: u64 = 1500;
 const UPGRADE_ACCESS_WAIT_TIMEOUT_MS: u64 = 8_000;
+const UPGRADE_PRE_ERASE_SETTLE_MS: u64 = 320;
 const UPGRADE_POST_ERASE_SETTLE_MS: u64 = 180;
+const UPGRADE_ERASE_RETRY_ATTEMPTS: usize = 2;
+const UPGRADE_ERASE_RETRY_DELAY_MS: u64 = 420;
 const UPGRADE_CHUNK_RETRY_ATTEMPTS: usize = 3;
 const UPGRADE_CHUNK_RETRY_DELAY_MS: u64 = 120;
 const METER_CONFIG_INIT_ATTEMPTS: usize = 2;
@@ -411,6 +414,12 @@ enum UpgradeKind {
     App,
     Ui,
     Config,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AppWriteMode {
+    AddressedHex,
+    FrameNumberedBin,
 }
 
 #[derive(Debug)]
@@ -1504,7 +1513,9 @@ where
             _ => false,
         };
         match kind {
-            UpgradeKind::Boot => send_ack_command(manager, 0xE0, &[], "BOOT 擦除", &mut logs)?,
+            UpgradeKind::Boot => {
+                send_erase_command_with_retry(manager, 0xE0, &[], "BOOT 擦除", &mut logs)?
+            }
             UpgradeKind::App => {
                 if skip_erase {
                     logs.push(format!(
@@ -1512,7 +1523,7 @@ where
                         protocol_prep_label(protocol)
                     ));
                 } else {
-                    send_ack_command(manager, 0xA7, &[], "APP 擦除", &mut logs)?;
+                    send_erase_command_with_retry(manager, 0xA7, &[], "APP 擦除", &mut logs)?;
                 }
             }
             UpgradeKind::Ui => {
@@ -1522,7 +1533,7 @@ where
                         protocol_prep_label(protocol)
                     ));
                 } else {
-                    send_ack_command(manager, 0xA9, &[], "UI 擦除", &mut logs)?;
+                    send_erase_command_with_retry(manager, 0xA9, &[], "UI 擦除", &mut logs)?;
                 }
             }
             UpgradeKind::Config => {
@@ -1651,7 +1662,7 @@ where
         for (chunk_index, chunk) in chunks.iter().enumerate() {
             let (command, payload) = match kind {
                 UpgradeKind::Boot => (0xE1, chunk.data.clone()),
-                UpgradeKind::App => (0xA8, build_app_write_payload(chunk, chunk_index, protocol)),
+                UpgradeKind::App => (0xA8, build_app_write_payload(chunk, chunk_index, &file.file_name)),
                 UpgradeKind::Ui => (0xAA, build_ui_write_payload(chunk, chunk_index, protocol)),
                 UpgradeKind::Config => unreachable!(),
             };
@@ -1977,6 +1988,51 @@ fn send_ack_command(
     }
     logs.push(format!("{title}成功"));
     Ok(())
+}
+
+fn send_erase_command_with_retry(
+    manager: &SerialManager,
+    command: u8,
+    payload: &[u8],
+    title: &str,
+    logs: &mut Vec<String>,
+) -> Result<(), String> {
+    std::thread::sleep(Duration::from_millis(UPGRADE_PRE_ERASE_SETTLE_MS));
+
+    let timeout_ms = command_timeout_ms(command);
+    let mut last_error = None;
+
+    for attempt in 0..UPGRADE_ERASE_RETRY_ATTEMPTS {
+        match manager.send_command_success_with_options(command, payload, timeout_ms, true) {
+            Ok(true) => {
+                if attempt > 0 {
+                    logs.push(format!(
+                        "{title}成功（第 {} 次尝试）",
+                        attempt + 1
+                    ));
+                } else {
+                    logs.push(format!("{title}成功"));
+                }
+                return Ok(());
+            }
+            Ok(false) => {
+                last_error = Some(format!("{title}失败"));
+            }
+            Err(error) => {
+                last_error = Some(error);
+            }
+        }
+
+        if attempt + 1 < UPGRADE_ERASE_RETRY_ATTEMPTS {
+            logs.push(format!(
+                "{title}第 {} 次尝试失败，等待仪表稳定后重试",
+                attempt + 1
+            ));
+            std::thread::sleep(Duration::from_millis(UPGRADE_ERASE_RETRY_DELAY_MS));
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| format!("{title}失败")))
 }
 
 fn send_presence_command(
@@ -2910,13 +2966,6 @@ fn protocol_skips_ui_erase(protocol: UpgradeProtocol) -> bool {
     )
 }
 
-fn uses_frame_number_app_payload(protocol: UpgradeProtocol) -> bool {
-    matches!(
-        protocol,
-        UpgradeProtocol::KaiYang | UpgradeProtocol::GaoBiao
-    )
-}
-
 fn uses_frame_number_ui_payload(protocol: UpgradeProtocol) -> bool {
     matches!(protocol, UpgradeProtocol::KaiYang)
 }
@@ -3147,7 +3196,7 @@ fn send_protocol_prepare_command(
         }
         UpgradeProtocol::GaoBiao => {
             let payload = build_gaobiao_file_type_payload(kind)?;
-            let response = manager.send_command(0x22, &payload, DEFAULT_TIMEOUT_MS)?;
+            let response = manager.send_command(0x23, &payload, DEFAULT_TIMEOUT_MS)?;
             let response_payload = hex_to_bytes(&response.response_payload_hex)?;
             if response_payload.first().copied().unwrap_or_default() != 1 {
                 return Err("高标升级文件类型下发失败".to_string());
@@ -3159,7 +3208,41 @@ fn send_protocol_prepare_command(
     }
 }
 
-fn build_app_frame_number_chunks(file_name: &str, data: &[u8]) -> Result<Vec<DataChunk>, String> {
+fn parse_file_extension(file_name: &str) -> String {
+    Path::new(file_name)
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase()
+}
+
+fn resolve_app_write_mode(file_name: &str) -> Result<AppWriteMode, String> {
+    match parse_file_extension(file_name).as_str() {
+        "hex" => Ok(AppWriteMode::AddressedHex),
+        "bin" => Ok(AppWriteMode::FrameNumberedBin),
+        extension => Err(format!("APP 文件仅支持 .hex / .bin: {extension}")),
+    }
+}
+
+fn build_app_frame_number_chunks(data: &[u8]) -> Result<Vec<DataChunk>, String> {
+    build_sequential_chunks(data, 128, false)
+}
+
+fn build_app_addressed_hex_chunks(data: &[u8]) -> Result<Vec<DataChunk>, String> {
+    build_hex_chunks(data, 128)
+}
+
+fn build_app_chunks(file_name: &str, data: &[u8]) -> Result<Vec<DataChunk>, String> {
+    match resolve_app_write_mode(file_name)? {
+        AppWriteMode::AddressedHex => build_app_addressed_hex_chunks(data),
+        AppWriteMode::FrameNumberedBin => build_app_frame_number_chunks(data),
+    }
+}
+
+fn build_app_binary_like_chunks(
+    file_name: &str,
+    data: &[u8],
+) -> Result<Vec<DataChunk>, String> {
     let extension = Path::new(file_name)
         .extension()
         .and_then(|value| value.to_str())
@@ -3201,9 +3284,7 @@ fn build_realtime_chunks(
     protocol: UpgradeProtocol,
 ) -> Result<Vec<DataChunk>, String> {
     match kind {
-        UpgradeKind::App if uses_frame_number_app_payload(protocol) => {
-            build_app_frame_number_chunks(file_name, data)
-        }
+        UpgradeKind::App => build_app_chunks(file_name, data),
         UpgradeKind::Ui if uses_frame_number_ui_payload(protocol) => {
             build_ui_frame_number_chunks(file_name, data)
         }
@@ -3214,9 +3295,9 @@ fn build_realtime_chunks(
 fn build_app_write_payload(
     chunk: &DataChunk,
     chunk_index: usize,
-    protocol: UpgradeProtocol,
+    file_name: &str,
 ) -> Vec<u8> {
-    if uses_frame_number_app_payload(protocol) {
+    if resolve_app_write_mode(file_name).ok() == Some(AppWriteMode::FrameNumberedBin) {
         let mut payload = (chunk_index as u32).to_be_bytes().to_vec();
         payload.extend_from_slice(&chunk.data);
         return payload;
@@ -3249,21 +3330,16 @@ fn build_ui_write_payload(
 }
 
 fn build_chunks(file_name: &str, data: &[u8], kind: UpgradeKind) -> Result<Vec<DataChunk>, String> {
-    let extension = Path::new(file_name)
-        .extension()
-        .and_then(|value| value.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
+    let extension = parse_file_extension(file_name);
 
     match (kind, extension.as_str()) {
-        (UpgradeKind::App, "hex") => build_hex_chunks(data, 112),
         (UpgradeKind::Ui, "txt") => {
             build_sequential_chunks(&parse_hex_text_bytes(data)?, 128, true)
         }
         (_, "txt") => build_sequential_chunks(&parse_hex_text_bytes(data)?, 128, true),
         (UpgradeKind::Boot, _) => build_sequential_chunks(data, 128, true),
         (UpgradeKind::Ui, _) => build_sequential_chunks(data, 128, true),
-        (UpgradeKind::App, _) => build_sequential_chunks(data, 116, false),
+        (UpgradeKind::App, _) => build_app_binary_like_chunks(file_name, data),
         (UpgradeKind::Config, _) => Err("配置文件不需要分包".to_string()),
     }
 }

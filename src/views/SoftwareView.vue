@@ -7,7 +7,11 @@
             v-for="item in localFileMetas.filter((item) => localKindOrder.includes(item.kind))"
             :key="`local-${item.kind}`"
             class="file-card file-card--local"
-            :class="{ 'file-card--active': localFiles[item.kind].isActive }"
+            :class="{
+              'file-card--active': localFiles[item.kind].isActive,
+              'file-card--ready': Boolean(localFiles[item.kind].fileName),
+              'file-card--empty': !localFiles[item.kind].fileName,
+            }"
           >
             <div class="file-card__head">
               <div class="file-card__head-main">
@@ -20,8 +24,16 @@
                 </div>
               </div>
             </div>
-            <div class="file-card__dropzone">
-              <div class="file-card__dropzone-icon">
+            <div :class="['file-card__dropzone', { 'file-card__dropzone--ready': localFiles[item.kind].fileName }]">
+              <div
+                :class="[
+                  'file-card__dropzone-icon',
+                  {
+                    'file-card__dropzone-icon--ready': localFiles[item.kind].fileName,
+                    'file-card__dropzone-icon--success': isFileCompleted(localFiles[item.kind]),
+                  },
+                ]"
+              >
                 <q-icon :name="localFiles[item.kind].fileName ? 'task_alt' : 'upload_file'" size="22px" />
               </div>
               <div class="file-card__dropzone-copy">
@@ -34,7 +46,7 @@
                 rounded
                 size="8px"
                 :value="localFiles[item.kind].percent / 100"
-                color="primary"
+                :color="isFileCompleted(localFiles[item.kind]) ? 'positive' : 'primary'"
               />
               <span>{{ localFiles[item.kind].percent }}%</span>
             </div>
@@ -82,22 +94,29 @@
                 class="hidden-input"
                 type="file"
                 :accept="item.accept"
+                :disabled="upgradeLoading"
                 @change="handleLocalFileChange($event, item.kind)"
               />
-              <q-btn push color="primary" :label="t('software.local.selectFile', { label: item.label })" @click="openLocalFile(item.kind)" />
+              <q-btn
+                push
+                color="primary"
+                :label="t('software.local.selectFile', { label: item.label })"
+                :disable="upgradeLoading"
+                @click="openLocalFile(item.kind)"
+              />
               <q-btn
                 outline
                 color="negative"
                 :label="t('software.local.clear')"
-                :disable="!localFiles[item.kind].fileName"
+                :disable="!localFiles[item.kind].fileName || upgradeLoading"
                 @click="resetLocalFile(item.kind)"
               />
               <q-btn
                 push
                 color="positive"
                 :label="t('software.local.startUpgrade')"
-                :loading="upgradeLoading"
-                :disable="!localFiles[item.kind].fileName || !sharedCqCode || !isDeviceConnected"
+                :loading="isKindUpgrading(item.kind)"
+                :disable="!localFiles[item.kind].fileName || !sharedCqCode || !isDeviceConnected || isUpgradeLocked(item.kind)"
                 @click="handleSingleLocalUpgrade(item.kind)"
               />
             </div>
@@ -152,6 +171,7 @@ const localFileMetas = [
 const onlineBundleLoading = ref(false)
 const syncLoading = ref(false)
 const upgradeLoading = ref(false)
+const upgradingKind = ref("")
 const onlineBundleForm = reactive({
   codeOrSn: "8QeJB9d3c8",
 })
@@ -240,8 +260,6 @@ onBeforeUnmount(() => {
 })
 
 const hasActiveLocalFiles = computed(() => localKindOrder.some((kind) => localFiles[kind].isActive))
-const localSelectedCount = computed(() => localKindOrder.filter((kind) => localFiles[kind].isActive).length)
-const localReadyCount = computed(() => localKindOrder.filter((kind) => localFiles[kind].fileName).length)
 const sharedCqCode = computed(() => String(deviceStore.upgradeCqCode || "").trim().toUpperCase())
 const isDeviceConnected = computed(() => deviceStore.connectionStatus === "CONNECTED")
 
@@ -413,6 +431,10 @@ function getFileStateLabel(file) {
   return file.isActive ? t("software.local.fileState.selected") : t("software.local.fileState.pending")
 }
 
+function isFileCompleted(file) {
+  return Boolean(file?.fileName) && Number(file?.percent) >= 100
+}
+
 function getSourceMeta(sourceUrl) {
   if (!sourceUrl) {
     return t("software.local.source.onlineBundle")
@@ -498,6 +520,14 @@ async function handleSingleLocalUpgrade(kind) {
   await runUpgrade([file], localFiles, t("software.local.source.localFileWithLabel", { label: file.label }))
 }
 
+function isKindUpgrading(kind) {
+  return upgradeLoading.value && upgradingKind.value === kind
+}
+
+function isUpgradeLocked(kind) {
+  return upgradeLoading.value && upgradingKind.value !== kind
+}
+
 async function runSync(selectedFiles, groupState, sourceLabel) {
   if (!selectedFiles.length) {
     notifyError(t("software.local.errors.selectFileFirst"))
@@ -555,6 +585,7 @@ async function runUpgrade(selectedFiles, groupState, sourceLabel) {
 
   currentLogKinds = selectedFiles.map((item) => item.kind)
   upgradeLoading.value = true
+  upgradingKind.value = selectedFiles.length === 1 ? selectedFiles[0]?.kind || "" : ""
   deviceStore.setUpgradeInProgress(true)
   currentUpgradeGroup = groupState
   resetProgress(groupState)
@@ -603,6 +634,7 @@ async function runUpgrade(selectedFiles, groupState, sourceLabel) {
     currentUpgradeGroup = null
     deviceStore.setUpgradeInProgress(false)
     upgradeLoading.value = false
+    upgradingKind.value = ""
   }
 }
 
@@ -990,7 +1022,8 @@ function clearLogs() {
 .workspace-panel__content--local {
   flex: 1 1 auto;
   min-height: 0;
-  overflow: auto;
+  height: 100%;
+  overflow: hidden;
 }
 
 .local-section-head {
@@ -1118,6 +1151,7 @@ function clearLogs() {
 }
 
 .file-grid--local {
+  display: grid;
   flex: 1 1 auto;
   min-height: 0;
   height: 100%;
@@ -1125,6 +1159,7 @@ function clearLogs() {
   grid-auto-rows: minmax(0, 1fr);
   align-content: stretch;
   align-items: stretch;
+  overflow: auto;
 }
 
 .file-card {
@@ -1144,6 +1179,7 @@ function clearLogs() {
 }
 
 .file-card--local {
+  flex: 1 1 auto;
   min-height: 0;
   height: 100%;
   padding: 16px 18px 16px;
@@ -1151,6 +1187,22 @@ function clearLogs() {
   border-color: color-mix(in srgb, var(--dt-border-strong) 78%, transparent);
   background: var(--software-card-bg-soft), var(--software-glow);
   box-shadow: var(--dt-gloss-inset), var(--dt-shadow-panel);
+}
+
+.file-card--local.file-card--empty {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--dt-bg-panel) 96%, white 4%), color-mix(in srgb, var(--dt-bg-panel-soft) 92%, transparent)),
+    var(--software-glow);
+}
+
+.file-card--local.file-card--ready {
+  border-color: color-mix(in srgb, var(--dt-accent) 34%, var(--dt-border-strong) 66%);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--dt-bg-panel) 84%, var(--dt-accent) 16%), color-mix(in srgb, var(--dt-bg-panel-soft) 86%, var(--dt-accent) 14%)),
+    var(--software-glow);
+  box-shadow:
+    var(--dt-gloss-inset),
+    0 16px 28px color-mix(in srgb, var(--dt-accent) 10%, transparent);
 }
 
 .file-card:not(.file-card--local) {
@@ -1202,16 +1254,26 @@ function clearLogs() {
   display: flex;
   align-items: center;
   gap: 14px;
-  min-height: 72px;
+  min-height: 86px;
+  height: 86px;
   padding: 14px 16px;
   border: 1px dashed var(--software-dropzone-border);
   border-radius: var(--dt-radius-subtle);
   background: var(--software-dropzone-bg);
+  box-sizing: border-box;
+  overflow: hidden;
 }
 
 .file-card--active .file-card__dropzone {
   border-color: color-mix(in srgb, var(--dt-accent) 58%, var(--dt-border) 42%);
   background: var(--software-dropzone-bg-active);
+}
+
+.file-card--ready .file-card__dropzone,
+.file-card__dropzone--ready {
+  border-color: color-mix(in srgb, #3b82f6 46%, var(--dt-accent) 54%);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, white 78%, var(--dt-accent) 22%), color-mix(in srgb, var(--dt-bg-panel) 82%, var(--dt-accent) 18%));
 }
 
 .file-card__dropzone-icon {
@@ -1226,8 +1288,26 @@ function clearLogs() {
   flex: 0 0 auto;
 }
 
+.file-card__dropzone-icon--ready {
+  background:
+    linear-gradient(135deg, color-mix(in srgb, #3b82f6 18%, white 82%), color-mix(in srgb, var(--dt-accent) 24%, white 76%));
+  color: color-mix(in srgb, var(--dt-accent) 72%, #2563eb 28%);
+  box-shadow:
+    var(--dt-gloss-inset),
+    0 10px 22px color-mix(in srgb, var(--dt-accent) 18%, transparent);
+}
+
+.file-card__dropzone-icon--success {
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.18), rgba(34, 197, 94, 0.28));
+  color: #10b981;
+  box-shadow:
+    var(--dt-gloss-inset),
+    0 10px 22px rgba(16, 185, 129, 0.18);
+}
+
 .file-card__dropzone-copy {
   min-width: 0;
+  flex: 1 1 auto;
 }
 
 .file-card__dropzone-copy strong {
@@ -1236,6 +1316,9 @@ function clearLogs() {
   font-size: 14px;
   font-weight: 800;
   line-height: 1.35;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .file-card__dropzone-copy p {
@@ -1243,6 +1326,14 @@ function clearLogs() {
   color: var(--dt-text-secondary);
   font-size: 12px;
   line-height: 1.55;
+}
+
+.file-card--ready .file-card__dropzone-copy strong {
+  color: color-mix(in srgb, var(--dt-text-primary) 84%, var(--dt-accent) 16%);
+}
+
+.file-card--ready .file-card__dropzone-copy p {
+  color: color-mix(in srgb, var(--dt-text-secondary) 76%, var(--dt-accent) 24%);
 }
 
 .file-card__tag {
@@ -1369,7 +1460,7 @@ function clearLogs() {
 
 .file-terminal__body {
   flex: 1 1 auto;
-  min-height: 220px;
+  min-height: 0;
   overflow: hidden;
   padding: 0;
   border: 1px solid var(--software-terminal-border);
@@ -1381,7 +1472,7 @@ function clearLogs() {
 
 .file-terminal__scroll {
   height: 100%;
-  min-height: 220px;
+  min-height: 100%;
   padding: 16px 18px;
   font-family: "SFMono-Regular", "Menlo", "Monaco", monospace;
   font-size: 12px;
@@ -1406,8 +1497,13 @@ function clearLogs() {
 }
 
 .file-terminal__empty {
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-start;
+  min-height: 100%;
   color: var(--software-terminal-muted);
   padding: 16px 18px;
+  box-sizing: border-box;
   line-height: 1.7;
 }
 
@@ -1745,6 +1841,25 @@ function clearLogs() {
   background: var(--software-dropzone-bg-active);
 }
 
+:global(html[data-theme="dark"]) .program-burning-page .file-card--ready .file-card__dropzone,
+:global(html[data-theme="dark"]) .program-burning-page .file-card__dropzone--ready,
+:global(html.theme-dark) .program-burning-page .file-card--ready .file-card__dropzone,
+:global(html.theme-dark) .program-burning-page .file-card__dropzone--ready,
+:global(body.body--dark) .program-burning-page .file-card--ready .file-card__dropzone,
+:global(body.body--dark) .program-burning-page .file-card__dropzone--ready,
+:global(body.theme-dark) .program-burning-page .file-card--ready .file-card__dropzone,
+:global(body.theme-dark) .program-burning-page .file-card__dropzone--ready,
+:global(body[data-theme="dark"]) .program-burning-page .file-card--ready .file-card__dropzone,
+:global(body[data-theme="dark"]) .program-burning-page .file-card__dropzone--ready {
+  border-color: rgba(82, 134, 235, 0.48);
+  background:
+    linear-gradient(180deg, rgba(32, 44, 76, 0.92), rgba(20, 26, 46, 0.98)),
+    radial-gradient(circle at left center, rgba(52, 97, 201, 0.12), transparent 42%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.05),
+    0 12px 24px rgba(6, 10, 22, 0.18);
+}
+
 :global(html[data-theme="dark"]) .program-burning-page .file-card__dropzone-icon,
 :global(html.theme-dark) .program-burning-page .file-card__dropzone-icon,
 :global(body.body--dark) .program-burning-page .file-card__dropzone-icon,
@@ -1755,6 +1870,30 @@ function clearLogs() {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
 }
 
+:global(html[data-theme="dark"]) .program-burning-page .file-card__dropzone-icon--ready,
+:global(html.theme-dark) .program-burning-page .file-card__dropzone-icon--ready,
+:global(body.body--dark) .program-burning-page .file-card__dropzone-icon--ready,
+:global(body.theme-dark) .program-burning-page .file-card__dropzone-icon--ready,
+:global(body[data-theme="dark"]) .program-burning-page .file-card__dropzone-icon--ready {
+  background: linear-gradient(135deg, rgba(62, 91, 168, 0.34), rgba(36, 58, 116, 0.48));
+  color: #7ea7ff;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    0 10px 22px rgba(24, 56, 136, 0.22);
+}
+
+:global(html[data-theme="dark"]) .program-burning-page .file-card__dropzone-icon--success,
+:global(html.theme-dark) .program-burning-page .file-card__dropzone-icon--success,
+:global(body.body--dark) .program-burning-page .file-card__dropzone-icon--success,
+:global(body.theme-dark) .program-burning-page .file-card__dropzone-icon--success,
+:global(body[data-theme="dark"]) .program-burning-page .file-card__dropzone-icon--success {
+  background: linear-gradient(135deg, rgba(17, 94, 66, 0.5), rgba(18, 120, 82, 0.42));
+  color: #4ade80;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.05),
+    0 10px 22px rgba(16, 185, 129, 0.16);
+}
+
 :global(html[data-theme="dark"]) .program-burning-page .file-card__dropzone-copy strong,
 :global(html.theme-dark) .program-burning-page .file-card__dropzone-copy strong,
 :global(body.body--dark) .program-burning-page .file-card__dropzone-copy strong,
@@ -1763,12 +1902,28 @@ function clearLogs() {
   color: var(--dt-text-primary);
 }
 
+:global(html[data-theme="dark"]) .program-burning-page .file-card--ready .file-card__dropzone-copy strong,
+:global(html.theme-dark) .program-burning-page .file-card--ready .file-card__dropzone-copy strong,
+:global(body.body--dark) .program-burning-page .file-card--ready .file-card__dropzone-copy strong,
+:global(body.theme-dark) .program-burning-page .file-card--ready .file-card__dropzone-copy strong,
+:global(body[data-theme="dark"]) .program-burning-page .file-card--ready .file-card__dropzone-copy strong {
+  color: #d7e3ff;
+}
+
 :global(html[data-theme="dark"]) .program-burning-page .file-card__dropzone-copy p,
 :global(html.theme-dark) .program-burning-page .file-card__dropzone-copy p,
 :global(body.body--dark) .program-burning-page .file-card__dropzone-copy p,
 :global(body.theme-dark) .program-burning-page .file-card__dropzone-copy p,
 :global(body[data-theme="dark"]) .program-burning-page .file-card__dropzone-copy p {
   color: var(--dt-text-secondary);
+}
+
+:global(html[data-theme="dark"]) .program-burning-page .file-card--ready .file-card__dropzone-copy p,
+:global(html.theme-dark) .program-burning-page .file-card--ready .file-card__dropzone-copy p,
+:global(body.body--dark) .program-burning-page .file-card--ready .file-card__dropzone-copy p,
+:global(body.theme-dark) .program-burning-page .file-card--ready .file-card__dropzone-copy p,
+:global(body[data-theme="dark"]) .program-burning-page .file-card--ready .file-card__dropzone-copy p {
+  color: rgba(183, 198, 231, 0.76);
 }
 
 :global(html[data-theme="dark"]) .program-burning-page .file-card__tag,
