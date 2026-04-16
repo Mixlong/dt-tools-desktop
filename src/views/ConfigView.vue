@@ -27,6 +27,20 @@
             </div>
           </section>
 
+          <section v-if="debugLogs.length && canDisplayConfig" class="config-debug">
+            <div class="config-debug__header">
+              <span>链路日志</span>
+              <q-btn flat dense no-caps color="primary" label="清空" @click="clearDebugLogs" />
+            </div>
+            <q-scroll-area class="config-debug__scroll">
+              <div class="config-debug__body">
+                <div v-for="(line, index) in debugLogs" :key="`${index}-${line}`" class="config-debug__line">
+                  {{ line }}
+                </div>
+              </div>
+            </q-scroll-area>
+          </section>
+
           <template v-if="canDisplayConfig">
             <q-scroll-area class="panel-body__scroll">
               <div class="panel-body__content">
@@ -95,7 +109,7 @@
           </template>
 
           <template v-else>
-            <section :class="['config-empty', `config-empty--${emptyState.tone}`]">
+            <section :class="['config-empty', `config-empty--${emptyState.tone}`, { 'config-empty--reading': showEmptyTerminal }]">
               <div class="config-empty__hero">
                 <div class="config-empty__visual" aria-hidden="true">
                   <span class="config-empty__halo config-empty__halo--outer" />
@@ -112,9 +126,27 @@
                   <span class="config-empty__endpoint config-empty__endpoint--right">{{ transportBaudLabel }}</span>
                 </div>
 
-                <div class="config-empty__content">
-                  <h3>{{ emptyState.title }}</h3>
-                  <p class="config-empty__description">{{ emptyState.description }}</p>
+                <div class="config-empty__panel-stage">
+                  <div :class="['config-empty__content', { 'config-empty__content--hidden': showEmptyTerminal }]">
+                    <h3>{{ emptyState.title }}</h3>
+                    <p class="config-empty__description">{{ emptyState.description }}</p>
+                  </div>
+                  <section :class="['config-empty__terminal', { 'config-empty__terminal--active': showEmptyTerminal }]">
+                    <div class="config-empty__terminal-header">
+                      <span>终端日志</span>
+                      <q-btn flat dense no-caps color="primary" label="清空" @click="clearDebugLogs" />
+                    </div>
+                    <q-scroll-area class="config-empty__terminal-scroll">
+                      <div class="config-empty__terminal-body">
+                        <div v-if="!debugLogs.length" class="config-empty__terminal-placeholder">
+                          等待读取链路日志输出...
+                        </div>
+                        <div v-for="(line, index) in debugLogs" :key="`empty-${index}-${line}`" class="config-empty__terminal-line">
+                          {{ line }}
+                        </div>
+                      </div>
+                    </q-scroll-area>
+                  </section>
                 </div>
               </div>
             </section>
@@ -184,6 +216,7 @@ const readStatus = computed({
     meterConfigStore.readStatus = value
   },
 })
+const debugLogs = computed(() => meterConfigStore.debugLogs)
 const surfaceMode = computed(() => "ledger")
 
 const loading = reactive({
@@ -191,6 +224,7 @@ const loading = reactive({
   read: false,
   write: false,
 })
+const keepEmptyTerminalVisible = ref(false)
 let canHeartbeatTimer = null
 let heartbeatInFlight = false
 
@@ -346,6 +380,11 @@ const toolbarStatusTone = computed(() => {
 const toolbarStatusLabel = computed(() => (
   canDisplayConfig.value ? readStatusLabel.value : emptyState.value?.badge
 ))
+const showEmptyTerminal = computed(() => (
+  !canDisplayConfig.value
+  && isDeviceConnected.value
+  && (loading.read || loading.init || keepEmptyTerminalVisible.value)
+))
 const emptyState = computed(() => {
   if (hasReadableConfig.value) {
     return null
@@ -422,7 +461,15 @@ function getTransportErrorMessage(error) {
     return `配置链路初始化超时。当前页面选择的是 ${transportLabel} / ${baudLabel}，请检查 CANH/CANL/GND 接线、仪表供电以及 CAN 帧类型是否与设备一致`
   }
 
-  return `配置链路初始化超时。请确认适配器连接使用固定 115200，当前页面选择的是 ${transportLabel} / ${baudLabel}，并检查仪表是否上电、TX/RX/GND 接线是否正确`
+  return `配置链路初始化超时。当前实际尝试的是 ${transportLabel} / ${baudLabel}，请检查仪表是否上电、TX/RX/GND 接线是否正确`
+}
+
+function appendDebugLogs(lines) {
+  meterConfigStore.appendDebugLogs(lines)
+}
+
+function clearDebugLogs() {
+  meterConfigStore.clearDebugLogs()
 }
 
 watch(
@@ -431,6 +478,7 @@ watch(
     if (status !== "CONNECTED") {
       stopCanHeartbeat()
       linkReady.value = false
+      keepEmptyTerminalVisible.value = false
       meterConfigStore.resetForm()
       return
     }
@@ -476,6 +524,7 @@ async function initTransport(options = {}) {
 
   loading.init = true
   try {
+    appendDebugLogs([`${trigger}: 开始初始化，当前尝试 ${transportForm.commType === 0x02 ? "CAN" : "UART"} / ${transportBaudLabel.value}`])
     const result = await setMeterConfigTransport({
       commType: transportForm.commType,
       baudCode: transportForm.baudCode,
@@ -486,6 +535,7 @@ async function initTransport(options = {}) {
 
     linkReady.value = result.success
     lastAction.value = `${trigger}: ${result.message}`
+    appendDebugLogs([`${trigger}: ${result.message}`])
     if (!silent || !result.success) {
       if (result.success) {
         if (shouldNotifySuccess) {
@@ -499,6 +549,7 @@ async function initTransport(options = {}) {
   } catch (error) {
     linkReady.value = false
     lastAction.value = t("config.actions.initFailed", { trigger })
+    appendDebugLogs([`${trigger}: ${String(error)}`])
     if (!silent) {
       notifyError(getTransportErrorMessage(error))
     }
@@ -518,8 +569,10 @@ async function ensureTransportReady(trigger, options = {}) {
 
 async function executeReadConfig() {
   const result = await readMeterConfig({ commType: transportForm.commType })
+  appendDebugLogs(result.logs || [])
   Object.assign(form, decodeMeterConfig(result.bytes))
   hasLoadedConfig.value = true
+  keepEmptyTerminalVisible.value = false
   readStatus.value = "success"
   linkReady.value = true
   lastAction.value = t("config.actions.readSuccess")
@@ -543,7 +596,9 @@ async function handleReadConfig() {
   }
 
   loading.read = true
+  keepEmptyTerminalVisible.value = true
   try {
+    appendDebugLogs(["开始读取配置"])
     if (!linkReady.value) {
       const ready = await initTransport({
         silent: true,
@@ -559,7 +614,9 @@ async function handleReadConfig() {
     await executeReadConfig()
   } catch (error) {
     hasLoadedConfig.value = false
+    keepEmptyTerminalVisible.value = true
     readStatus.value = "error"
+    appendDebugLogs([`读取配置失败: ${String(error)}`])
     notifyError(error)
   } finally {
     loading.read = false
@@ -959,7 +1016,49 @@ function setSectionRef(groupKey, el) {
   right: 2px;
 }
 
+.config-debug {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0 18px 12px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--dt-border) 84%, transparent);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--dt-bg-panel) 82%, transparent);
+  box-shadow: var(--dt-shadow-panel);
+}
+
+.config-debug__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--dt-text-primary);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.config-debug__scroll {
+  max-height: 160px;
+}
+
+.config-debug__body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-right: 8px;
+}
+
+.config-debug__line {
+  color: var(--dt-text-secondary);
+  font-family: "SFMono-Regular", "Menlo", "Monaco", monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .config-empty {
+  --config-empty-reading-gutter: clamp(20px, 2vw, 30px);
   --config-empty-accent: var(--dt-header-muted);
   --config-empty-accent-soft: color-mix(in srgb, var(--dt-header-muted) 16%, transparent);
   --config-empty-accent-line: color-mix(in srgb, var(--dt-header-muted) 34%, transparent);
@@ -1012,6 +1111,25 @@ function setSectionRef(groupKey, el) {
   width: 100%;
   max-width: 920px;
   margin: 0 auto;
+  transition:
+    gap 0.42s cubic-bezier(0.22, 1, 0.36, 1),
+    max-width 0.42s cubic-bezier(0.22, 1, 0.36, 1),
+    padding-top 0.42s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.config-empty--reading .config-empty__hero {
+  justify-content: flex-start;
+  gap: clamp(16px, 1.8vw, 22px);
+  width: 100%;
+  max-width: 1120px;
+  padding-top: clamp(10px, 1vw, 16px);
+}
+
+.config-empty--reading {
+  padding:
+    clamp(12px, 1.2vw, 18px)
+    var(--config-empty-reading-gutter)
+    var(--config-empty-reading-gutter);
 }
 
 .config-empty__visual {
@@ -1026,6 +1144,24 @@ function setSectionRef(groupKey, el) {
     filter 0.9s cubic-bezier(0.22, 1, 0.36, 1),
     opacity 0.9s cubic-bezier(0.22, 1, 0.36, 1),
     transform 0.9s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.config-empty--reading .config-empty__visual {
+  min-height: 250px;
+}
+
+.config-empty__visual,
+.config-empty__content,
+.config-empty__terminal {
+  transition:
+    transform 0.42s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.32s ease,
+    min-height 0.42s cubic-bezier(0.22, 1, 0.36, 1),
+    filter 0.32s ease;
+}
+
+.config-empty--reading .config-empty__visual {
+  transform: translateY(-8px);
 }
 
 .config-empty__visual::before {
@@ -1243,6 +1379,18 @@ function setSectionRef(groupKey, el) {
     transform 0.8s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
+.config-empty__panel-stage {
+  position: relative;
+  display: grid;
+  width: 100%;
+  min-height: clamp(196px, 24vh, 300px);
+}
+
+.config-empty__panel-stage > .config-empty__content,
+.config-empty__panel-stage > .config-empty__terminal {
+  grid-area: 1 / 1;
+}
+
 .config-empty--offline .config-empty__visual {
   filter: grayscale(1) saturate(0.18) brightness(1.02);
   opacity: 0.74;
@@ -1277,6 +1425,73 @@ function setSectionRef(groupKey, el) {
   color: var(--dt-text-secondary);
   font-size: 15px;
   line-height: 1.8;
+}
+
+.config-empty__terminal {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  min-height: 0;
+  flex: 1 1 auto;
+  padding: 14px 16px;
+  border-radius: 20px;
+  border: 1px solid color-mix(in srgb, var(--dt-border) 86%, transparent);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--dt-bg-panel) 96%, transparent), color-mix(in srgb, var(--dt-bg-panel) 90%, transparent));
+  box-shadow: var(--dt-shadow-panel);
+}
+
+.config-empty__panel-stage > .config-empty__content {
+  width: 100%;
+  max-width: 720px;
+  justify-self: center;
+}
+
+.config-empty__content--hidden {
+  opacity: 0;
+  transform: translateY(-16px) scale(0.992);
+  filter: blur(2px);
+  pointer-events: none;
+}
+
+.config-empty__terminal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--dt-text-primary);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.config-empty__terminal-scroll {
+  flex: 1 1 auto;
+  min-height: 220px;
+}
+
+.config-empty__terminal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 100%;
+  padding: 4px 8px 8px 0;
+}
+
+.config-empty__terminal-line,
+.config-empty__terminal-placeholder {
+  font-family: "SFMono-Regular", "Menlo", "Monaco", monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.config-empty__terminal-line {
+  color: var(--dt-text-secondary);
+}
+
+.config-empty__terminal-placeholder {
+  color: var(--dt-text-muted);
 }
 
 @keyframes config-empty-orbit {

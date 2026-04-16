@@ -508,7 +508,7 @@ export function encodeMeterConfig(config) {
 }
 
 export function decodeMeterConfig(bytes) {
-  if (!Array.isArray(bytes) || bytes.length < 49) {
+  if (!Array.isArray(bytes) || bytes.length < 2) {
     throw new Error("配置字节长度不足")
   }
 
@@ -516,8 +516,12 @@ export function decodeMeterConfig(bytes) {
 
   // 旧项目读取 0xC3 配置时，设备会返回去掉系统时间（年/月/日/时/分）的 49 字节包。
   // 新项目写入仍然是 54 字节，因此这里把 49 字节老格式补齐成统一的 54 字节再解码。
-  if (bytes.length === 49) {
-    normalizedBytes = [bytes[0], bytes[1], 0, 0, 0, 0, 0, ...bytes.slice(2)]
+  if (bytes.length < 54) {
+    const paddedLegacyBytes = [...bytes]
+    while (paddedLegacyBytes.length < 49) {
+      paddedLegacyBytes.push(0)
+    }
+    normalizedBytes = [paddedLegacyBytes[0], paddedLegacyBytes[1], 0, 0, 0, 0, 0, ...paddedLegacyBytes.slice(2)]
   }
 
   return normalizeMeterConfig({

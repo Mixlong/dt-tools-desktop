@@ -19,6 +19,8 @@ const UPDATER_CONFIGURATION_HINTS = [
   "status code 404",
 ]
 
+const APP_VERSION = String(tauriConfig?.version || "0.1.0")
+
 function getPerfNow() {
   return typeof performance !== "undefined" ? performance.now() : Date.now()
 }
@@ -78,6 +80,15 @@ function getErrorMessage(error) {
 function isUpdaterNotReady(error) {
   const message = getErrorMessage(error).toLowerCase()
   return UPDATER_CONFIGURATION_HINTS.some((hint) => message.includes(hint.toLowerCase()))
+}
+
+export async function getRemoteAppVersion() {
+  if (!isTauriDesktop() || !isUpdaterConfigured()) {
+    return APP_VERSION
+  }
+
+  const update = await check()
+  return String(update?.version || APP_VERSION)
 }
 
 export async function checkForAppUpdateWithPrompt() {

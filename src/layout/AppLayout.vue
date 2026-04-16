@@ -212,6 +212,10 @@
                   </div>
                 </div>
 
+                <div class="device-connect-panel__version">
+                  <span>v{{ currentAppVersion }}</span>
+                </div>
+
                 <div class="device-connect-panel__actions">
                   <q-btn class="device-connect-panel__action-secondary" color="white" text-color="black" :label="t('layout.device.refreshPorts')" @click="refreshPorts" />
                   <q-btn
@@ -353,6 +357,7 @@ import { notifyError, notifyInfo, notifySuccess } from "@/services/ui"
 import { useDeviceStore } from "@/store/device"
 import { saveThemeMode } from "@/utils/preferences"
 import { applyThemeMode } from "@/utils/theme"
+import tauriConfig from "../../src-tauri/tauri.conf.json"
 import {
   UPGRADE_CAN_BAUD_OPTIONS,
   UPGRADE_POWER_VOLTAGE_OPTIONS,
@@ -388,6 +393,7 @@ const headerTitleColor = computed(() => (currentThemeMode.value === "dark" ? "#f
 const logoImage = computed(() => ($q.dark.isActive ? darkLogoImage : lightLogoImage))
 const themeToggleIcon = computed(() => (currentThemeMode.value === "dark" ? "light_mode" : "dark_mode"))
 const themeToggleLabel = computed(() => (currentThemeMode.value === "dark" ? "浅色模式" : "深色模式"))
+const currentAppVersion = String(tauriConfig?.version || "0.1.0")
 const resolvedRouteTitle = computed(() => {
   if (route.meta?.titleKey) {
     return t(route.meta.titleKey)
@@ -1446,6 +1452,107 @@ async function toggleConnection() {
 .sidebar-bottom {
   flex: 0 0 auto;
   margin-top: 14px;
+}
+
+.sidebar-version-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--dt-gloss-surface) 92%, white 8%);
+  border: 1px solid var(--dt-gloss-border);
+  box-shadow:
+    var(--dt-gloss-inset),
+    var(--dt-shadow-panel);
+}
+
+.sidebar-version-card__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.sidebar-version-card__heading h3 {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.2;
+  font-weight: 800;
+  color: var(--dt-text-primary);
+}
+
+.sidebar-version-card__heading p {
+  margin: 4px 0 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--dt-text-secondary);
+}
+
+.sidebar-version-card__refresh {
+  color: var(--dt-text-secondary);
+  background: color-mix(in srgb, var(--dt-bg-panel) 72%, transparent);
+  border: 1px solid color-mix(in srgb, var(--dt-border) 90%, transparent);
+}
+
+.sidebar-version-card__rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sidebar-version-card__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--dt-bg-panel) 68%, transparent);
+  border: 1px solid color-mix(in srgb, var(--dt-border) 75%, transparent);
+}
+
+.sidebar-version-card__row span {
+  font-size: 12px;
+  color: var(--dt-text-secondary);
+}
+
+.sidebar-version-card__row strong {
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--dt-text-primary);
+}
+
+.sidebar-version-card__action {
+  font-weight: 800;
+  border-radius: var(--dt-radius-button);
+}
+
+:global(html[data-theme="dark"]) .sidebar-version-card,
+:global(html.theme-dark) .sidebar-version-card,
+:global(body.body--dark) .sidebar-version-card,
+:global(body.theme-dark) .sidebar-version-card,
+:global(body[data-theme="dark"]) .sidebar-version-card {
+  background: linear-gradient(180deg, rgba(29, 26, 42, 0.96), rgba(20, 18, 31, 0.94));
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+:global(html[data-theme="dark"]) .sidebar-version-card__refresh,
+:global(html.theme-dark) .sidebar-version-card__refresh,
+:global(body.body--dark) .sidebar-version-card__refresh,
+:global(body.theme-dark) .sidebar-version-card__refresh,
+:global(body[data-theme="dark"]) .sidebar-version-card__refresh {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+:global(html[data-theme="dark"]) .sidebar-version-card__row,
+:global(html.theme-dark) .sidebar-version-card__row,
+:global(body.body--dark) .sidebar-version-card__row,
+:global(body.theme-dark) .sidebar-version-card__row,
+:global(body[data-theme="dark"]) .sidebar-version-card__row {
+  background: rgba(255, 255, 255, 0.03);
+  border-color: rgba(255, 255, 255, 0.08);
 }
 
 .device-dock {

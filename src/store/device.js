@@ -73,7 +73,7 @@ function isUsableSerialPort(port) {
   }
 
   if (usbId) {
-    return ALLOWED_USB_DEVICE_IDS.has(usbId)
+    return true
   }
 
   if (IGNORED_PORT_TYPES.has(normalizedType)) {
@@ -99,14 +99,14 @@ function getSerialPortPriority(port) {
   }
 
   if (isUsbPort) {
-    return 2
+    return usbId ? 2 : 3
   }
 
   if (hasPreferredName) {
-    return 3
+    return 4
   }
 
-  return 4
+  return 5
 }
 
 function logDevicePerf(message) {

@@ -178,6 +178,6 @@ export default {
     },
   },
   transport: {
-    timeout: "Config transport initialization timed out. Confirm the adapter uses fixed 115200, the page is set to {transport} / {baud}, and the meter is powered on with TX/RX/GND wired correctly.",
+    timeout: "Config transport initialization timed out. The current attempted transport is {transport} / {baud}. Check that the meter is powered on and TX/RX/GND are wired correctly.",
   },
 }

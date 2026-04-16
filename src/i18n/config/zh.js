@@ -178,6 +178,6 @@ export default {
     },
   },
   transport: {
-    timeout: "配置链路初始化超时。请确认适配器连接使用固定 115200，当前页面选择的是 {transport} / {baud}，并检查仪表是否上电、TX/RX/GND 接线是否正确。",
+    timeout: "配置链路初始化超时。当前实际尝试的是 {transport} / {baud}，请检查仪表是否上电、TX/RX/GND 接线是否正确。",
   },
 }

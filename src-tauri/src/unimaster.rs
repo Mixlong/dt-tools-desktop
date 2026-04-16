@@ -19,6 +19,7 @@ const THREE_A_DEVICE_ADDRESS: u8 = 0x1A;
 const THREE_A_END_1: u8 = 0x0D;
 const THREE_A_END_2: u8 = 0x0A;
 const DEFAULT_TIMEOUT_MS: u64 = 1500;
+const UPGRADE_ACCESS_WAIT_TIMEOUT_MS: u64 = 8_000;
 const UPGRADE_POST_ERASE_SETTLE_MS: u64 = 180;
 const UPGRADE_CHUNK_RETRY_ATTEMPTS: usize = 3;
 const UPGRADE_CHUNK_RETRY_DELAY_MS: u64 = 120;
@@ -130,7 +131,7 @@ fn is_usable_serial_port(port: &serialport::SerialPortInfo) -> bool {
     }
 
     match &port.port_type {
-        SerialPortType::UsbPort(usb_port) => allowed_usb_serial_rank(usb_port).is_some(),
+        SerialPortType::UsbPort(_) => true,
         _ => false,
     }
 }
@@ -138,7 +139,7 @@ fn is_usable_serial_port(port: &serialport::SerialPortInfo) -> bool {
 fn serial_port_priority(port: &serialport::SerialPortInfo) -> usize {
     match &port.port_type {
         SerialPortType::UsbPort(usb_port) => {
-            allowed_usb_serial_rank(usb_port).unwrap_or(ALLOWED_USB_SERIAL_IDS.len())
+            allowed_usb_serial_rank(usb_port).unwrap_or(ALLOWED_USB_SERIAL_IDS.len() + 1)
         }
         _ => ALLOWED_USB_SERIAL_IDS.len() + 1,
     }
@@ -148,7 +149,8 @@ fn collect_serial_ports() -> Result<Vec<serialport::SerialPortInfo>, String> {
     let mut ports =
         serialport::available_ports().map_err(|error| format!("读取串口列表失败: {error}"))?;
 
-    // 只保留白名单内的 USB 串口适配器，避免把蓝牙音频、调试口等伪串口当成目标设备。
+    // 优先白名单内的 USB 串口适配器，但也保留其他通用 USB 串口，
+    // 避免更换芯片方案后端口在下拉框中直接消失。
     ports.retain(is_usable_serial_port);
     ports.sort_by(|left, right| {
         serial_port_priority(left)
@@ -210,6 +212,7 @@ pub struct SimpleResult {
 pub struct MeterConfigReadResponse {
     pub bytes: Vec<u8>,
     pub hex: String,
+    pub logs: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -916,13 +919,19 @@ pub fn set_meter_config_transport(
     let started_at = Instant::now();
     let mut last_error = "串口已连接，但配置链路初始化未收到 0x37 响应".to_string();
     let payload = build_meter_config_transport_payload(&request)?;
+    let legacy_payload = build_meter_config_transport_legacy_payload(&request);
+    let payload_hex = bytes_to_hex(&payload);
+    let legacy_payload_hex = bytes_to_hex(&legacy_payload);
 
     eprintln!(
-        "[perf][config-init][start] commType=0x{:02X} baudCode=0x{:02X} frameType=0x{:02X} payloadLen={}",
+        "[perf][config-init][start] commType=0x{:02X} baudCode=0x{:02X} frameType=0x{:02X} payloadLen={} legacyPayloadLen={} payload={} legacyPayload={}",
         request.comm_type,
         request.baud_code,
         request.frame_type,
-        payload.len()
+        payload.len(),
+        legacy_payload.len(),
+        payload_hex,
+        legacy_payload_hex
     );
 
     if detect_three_a_activity(manager, METER_CONFIG_ACTIVITY_DETECT_MS).unwrap_or(false) {
@@ -939,53 +948,96 @@ pub fn set_meter_config_transport(
 
     for attempt in 0..METER_CONFIG_INIT_ATTEMPTS {
         let attempt_started_at = Instant::now();
-        match manager.send_command(0x37, &payload, METER_CONFIG_INIT_TIMEOUT_MS) {
+        let mut tried_payloads = vec![format!("primary:{payload_hex}")];
+        let response = match manager.send_command(0x37, &payload, METER_CONFIG_INIT_TIMEOUT_MS) {
+            Ok(response) => Ok(response),
+            Err(error)
+                if payload != legacy_payload
+                    && error.contains("等待命令 0x37 响应超时") =>
+            {
+                tried_payloads.push(format!("legacy:{legacy_payload_hex}"));
+                eprintln!(
+                    "[perf][config-init][fallback-legacy] attempt={} attemptMs={} totalMs={} reason={} primaryPayload={} legacyPayload={}",
+                    attempt + 1,
+                    attempt_started_at.elapsed().as_millis(),
+                    started_at.elapsed().as_millis(),
+                    error,
+                    payload_hex,
+                    legacy_payload_hex
+                );
+                manager.send_command(0x37, &legacy_payload, METER_CONFIG_INIT_TIMEOUT_MS)
+            }
+            Err(error) => Err(error),
+        };
+
+        match response {
             Ok(response) => {
-                let payload = hex_to_bytes(&response.response_payload_hex)?;
-                let success = payload.first().copied().unwrap_or_default() == 1;
+                let response_payload = hex_to_bytes(&response.response_payload_hex)?;
+                let success = response_payload.first().copied().unwrap_or_default() == 1;
+                let mut message = if success {
+                    "仪表配置通讯初始化成功".to_string()
+                } else {
+                    "仪表配置通讯初始化失败".to_string()
+                };
 
                 if success {
                     if request.comm_type == 0x01 {
-                        prime_meter_config_uart(manager).map_err(|error| {
-                            format!("仪表配置通讯初始化成功，但 UART 心跳建立失败: {error}")
-                        })?;
+                        if let Err(error) = prime_meter_config_uart(manager) {
+                            eprintln!(
+                                "[perf][config-init][heartbeat-warn] attempt={} totalMs={} transport=uart error={}",
+                                attempt + 1,
+                                started_at.elapsed().as_millis(),
+                                error
+                            );
+                            message = format!("仪表配置通讯初始化成功（UART 心跳建立失败，已忽略: {error}）");
+                        }
                     } else if request.comm_type == 0x02 {
-                        prime_meter_config_can(manager).map_err(|error| {
-                            format!("仪表配置通讯初始化成功，但 CAN 心跳建立失败: {error}")
-                        })?;
+                        if let Err(error) = prime_meter_config_can(manager) {
+                            eprintln!(
+                                "[perf][config-init][heartbeat-warn] attempt={} totalMs={} transport=can error={}",
+                                attempt + 1,
+                                started_at.elapsed().as_millis(),
+                                error
+                            );
+                            message = format!("仪表配置通讯初始化成功（CAN 心跳建立失败，已忽略: {error}）");
+                        }
                     }
                 }
 
                 let result = SimpleResult {
                     success,
-                    message: if success {
-                        "仪表配置通讯初始化成功".to_string()
-                    } else {
-                        "仪表配置通讯初始化失败".to_string()
-                    },
+                    message,
                 };
 
                 eprintln!(
-                    "[perf][config-init][ok] attempt={} attemptMs={} totalMs={} success={}",
+                    "[perf][config-init][ok] attempt={} attemptMs={} totalMs={} success={} requestPayloads={} responseHex={} responsePayload={}",
                     attempt + 1,
                     attempt_started_at.elapsed().as_millis(),
                     started_at.elapsed().as_millis(),
-                    result.success
+                    result.success,
+                    tried_payloads.join(" -> "),
+                    response.response_hex,
+                    response.response_payload_hex
                 );
 
                 return Ok(result);
             }
             Err(error) => {
                 last_error = format!(
-                    "串口已连接，但配置链路初始化失败: commType=0x{:02X}, baudCode=0x{:02X}, frameType=0x{:02X}; {}",
-                    request.comm_type, request.baud_code, request.frame_type, error
+                    "串口已连接，但配置链路初始化失败: commType=0x{:02X}, baudCode=0x{:02X}, frameType=0x{:02X}, tried={}; {}",
+                    request.comm_type,
+                    request.baud_code,
+                    request.frame_type,
+                    tried_payloads.join(" -> "),
+                    error
                 );
 
                 eprintln!(
-                    "[perf][config-init][retry] attempt={} attemptMs={} totalMs={} error={}",
+                    "[perf][config-init][retry] attempt={} attemptMs={} totalMs={} requestPayloads={} error={}",
                     attempt + 1,
                     attempt_started_at.elapsed().as_millis(),
                     started_at.elapsed().as_millis(),
+                    tried_payloads.join(" -> "),
                     last_error
                 );
 
@@ -1026,6 +1078,10 @@ pub fn read_meter_config(
     request: MeterConfigReadRequest,
 ) -> Result<MeterConfigReadResponse, String> {
     let started_at = Instant::now();
+    let mut logs = vec![format!(
+        "开始读取配置：commType=0x{:02X}",
+        request.comm_type
+    )];
     eprintln!(
         "[perf][config-read][start] commType=0x{:02X}",
         request.comm_type
@@ -1039,9 +1095,14 @@ pub fn read_meter_config(
             None
         };
         let mut last_error = "等待 3A 命令 0xC3 响应超时".to_string();
+        logs.push(format!("读取命令帧: {}", bytes_to_hex(&request_frame)));
+        if let Some(frame) = &heartbeat_frame {
+            logs.push(format!("CAN 心跳帧: {}", bytes_to_hex(frame)));
+        }
 
         for attempt in 0..METER_CONFIG_READ_ATTEMPTS {
             let attempt_started_at = Instant::now();
+            logs.push(format!("读取尝试 {}/{}", attempt + 1, METER_CONFIG_READ_ATTEMPTS));
             let drained = drain_serial_until_quiet(
                 port,
                 METER_CONFIG_PRE_READ_DRAIN_MAX_MS,
@@ -1053,6 +1114,9 @@ pub fn read_meter_config(
                     attempt + 1,
                     drained
                 );
+            }
+            if drained > 0 {
+                logs.push(format!("预读取阶段丢弃历史数据 {}B", drained));
             }
 
             if let Some(heartbeat_frame) = &heartbeat_frame {
@@ -1066,6 +1130,7 @@ pub fn read_meter_config(
                     .map_err(|error| format!("发送配置链路心跳失败: {error}"))?;
                 port.flush()
                     .map_err(|error| format!("刷新串口失败: {error}"))?;
+                logs.push("已发送 CAN 心跳".to_string());
             }
 
             if should_trace_serial(0xC2) {
@@ -1079,9 +1144,15 @@ pub fn read_meter_config(
                 .map_err(|error| format!("发送 3A 指令失败: {error}"))?;
             port.flush()
                 .map_err(|error| format!("刷新串口失败: {error}"))?;
+            logs.push("已发送读取配置命令 0xC2".to_string());
 
             match read_meter_config_payload_compatible(port, METER_CONFIG_READ_TIMEOUT_MS) {
                 Ok(payload) => {
+                    logs.push(format!(
+                        "读取成功：payload={}，耗时 {}",
+                        bytes_to_hex(&payload),
+                        format_elapsed(attempt_started_at.elapsed()),
+                    ));
                     eprintln!(
                         "[perf][config-read][ok] attempt={} attemptMs={} totalMs={} payloadLen={}",
                         attempt + 1,
@@ -1093,6 +1164,12 @@ pub fn read_meter_config(
                 }
                 Err(error) => {
                     last_error = error;
+                    logs.push(format!(
+                        "读取失败：第 {} 次尝试，{}，耗时 {}",
+                        attempt + 1,
+                        last_error,
+                        format_elapsed(attempt_started_at.elapsed()),
+                    ));
                     eprintln!(
                         "[perf][config-read][retry] attempt={} attemptMs={} totalMs={} error={}",
                         attempt + 1,
@@ -1116,10 +1193,15 @@ pub fn read_meter_config(
 
         Err(last_error)
     })?;
+    logs.push(format!(
+        "读取完成，总耗时 {}",
+        format_elapsed(started_at.elapsed())
+    ));
 
     Ok(MeterConfigReadResponse {
         hex: bytes_to_hex(&payload),
         bytes: payload,
+        logs,
     })
 }
 
@@ -1187,15 +1269,7 @@ pub fn set_realtime_screen(manager: &SerialManager, screen: u8) -> Result<Simple
 pub fn read_access_state(manager: &SerialManager) -> Result<SimpleResult, String> {
     let response = manager.send_command(0x20, &[], DEFAULT_TIMEOUT_MS)?;
     let payload = hex_to_bytes(&response.response_payload_hex)?;
-    let status = payload.first().copied().unwrap_or(0xFF);
-    let message = match status {
-        0x00 => "检测超时，请重新插拔仪表",
-        _ => "仪表已接入",
-    };
-    Ok(SimpleResult {
-        success: status != 0x00,
-        message: message.to_string(),
-    })
+    parse_access_state_payload(&payload, "仪表已接入", "检测超时，请重新插拔仪表")
 }
 
 pub fn init_realtime_upgrade(
@@ -1370,8 +1444,19 @@ where
             });
         }
 
+        logs.push("等待仪表上报接入状态".to_string());
+        emit_upgrade_progress(
+            &mut report_progress,
+            file_index,
+            total_files,
+            file,
+            10,
+            "等待仪表上报接入状态".to_string(),
+            Some("等待仪表上报接入状态".to_string()),
+        );
+
         let access_started_at = Instant::now();
-        let access = read_access_state(manager)?;
+        let access = wait_for_passive_access_state(manager, UPGRADE_ACCESS_WAIT_TIMEOUT_MS)?;
         eprintln!(
             "[perf][upgrade][access] file={} ms={}",
             file.file_name,
@@ -2004,6 +2089,37 @@ fn send_finish_item_command(
     Ok(())
 }
 
+fn parse_access_state_payload(
+    payload: &[u8],
+    success_message: &str,
+    failure_message: &str,
+) -> Result<SimpleResult, String> {
+    let status = payload.first().copied().unwrap_or(0xFF);
+    Ok(SimpleResult {
+        success: status != 0x00,
+        message: if status == 0x00 {
+            failure_message
+        } else {
+            success_message
+        }
+        .to_string(),
+    })
+}
+
+fn wait_for_passive_access_state(
+    manager: &SerialManager,
+    timeout_ms: u64,
+) -> Result<SimpleResult, String> {
+    manager.with_port(|port| {
+        let frame = read_expected_frame(port, 0x20, timeout_ms)?;
+        parse_access_state_payload(
+            &frame.payload,
+            "收到仪表接入上报",
+            "收到仪表未接入上报，请重新插拔仪表",
+        )
+    })
+}
+
 fn handshake_versions(manager: &SerialManager) -> Result<FrameExchange, String> {
     let mut last_error = "未收到版本信息响应".to_string();
     for _ in 0..10 {
@@ -2499,7 +2615,11 @@ fn build_meter_config_transport_payload(request: &MeterTransportRequest) -> Resu
         return build_model_cq_payload(model, cq_code);
     }
 
-    Ok(vec![request.comm_type, request.baud_code, request.frame_type])
+    Ok(build_meter_config_transport_legacy_payload(request))
+}
+
+fn build_meter_config_transport_legacy_payload(request: &MeterTransportRequest) -> Vec<u8> {
+    vec![request.comm_type, request.baud_code, request.frame_type]
 }
 
 fn build_offline_upgrade_param_payload(
