@@ -20,6 +20,7 @@ const THREE_A_END_1: u8 = 0x0D;
 const THREE_A_END_2: u8 = 0x0A;
 const DEFAULT_TIMEOUT_MS: u64 = 1500;
 const UPGRADE_ACCESS_WAIT_TIMEOUT_MS: u64 = 8_000;
+const UPGRADE_ERASE_MAX_WAIT_MS: u64 = 60_000;
 const UPGRADE_PRE_ERASE_SETTLE_MS: u64 = 320;
 const UPGRADE_POST_ERASE_SETTLE_MS: u64 = 180;
 const UPGRADE_ERASE_RETRY_ATTEMPTS: usize = 2;
@@ -1999,11 +2000,20 @@ fn send_erase_command_with_retry(
 ) -> Result<(), String> {
     std::thread::sleep(Duration::from_millis(UPGRADE_PRE_ERASE_SETTLE_MS));
 
-    let timeout_ms = command_timeout_ms(command);
+    let deadline = Instant::now() + Duration::from_millis(UPGRADE_ERASE_MAX_WAIT_MS);
     let mut last_error = None;
 
     for attempt in 0..UPGRADE_ERASE_RETRY_ATTEMPTS {
-        match manager.send_command_success_with_options(command, payload, timeout_ms, true) {
+        let remaining_ms = deadline
+            .saturating_duration_since(Instant::now())
+            .as_millis() as u64;
+
+        if remaining_ms == 0 {
+            last_error = Some(format!("{title}超时（等待超过 60 秒）"));
+            break;
+        }
+
+        match manager.send_command_success_with_options(command, payload, remaining_ms, true) {
             Ok(true) => {
                 if attempt > 0 {
                     logs.push(format!(
@@ -2028,7 +2038,16 @@ fn send_erase_command_with_retry(
                 "{title}第 {} 次尝试失败，等待仪表稳定后重试",
                 attempt + 1
             ));
-            std::thread::sleep(Duration::from_millis(UPGRADE_ERASE_RETRY_DELAY_MS));
+            let retry_delay_ms = UPGRADE_ERASE_RETRY_DELAY_MS.min(
+                deadline
+                    .saturating_duration_since(Instant::now())
+                    .as_millis() as u64,
+            );
+            if retry_delay_ms == 0 {
+                last_error = Some(format!("{title}超时（等待超过 60 秒）"));
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(retry_delay_ms));
         }
     }
 
