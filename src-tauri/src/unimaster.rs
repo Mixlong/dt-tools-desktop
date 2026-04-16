@@ -2393,6 +2393,7 @@ fn should_trace_serial(command: u8) -> bool {
         0x14 | 0x16
             | 0x17
             | 0x21
+            | 0x22
             | 0x20
             | 0x30
             | 0x34
@@ -2989,7 +2990,7 @@ fn send_protocol_prepare_command(
         }
         UpgradeProtocol::GaoBiao => {
             let payload = build_gaobiao_file_type_payload(kind)?;
-            let response = manager.send_command(0x23, &payload, DEFAULT_TIMEOUT_MS)?;
+            let response = manager.send_command(0x22, &payload, DEFAULT_TIMEOUT_MS)?;
             let response_payload = hex_to_bytes(&response.response_payload_hex)?;
             if response_payload.first().copied().unwrap_or_default() != 1 {
                 return Err("高标升级文件类型下发失败".to_string());
@@ -3014,6 +3015,9 @@ fn build_app_frame_number_chunks(file_name: &str, data: &[u8]) -> Result<Vec<Dat
         _ => return Err(format!("APP 文件格式不支持帧序号写入: {extension}")),
     };
 
+    // 帧序号协议下 APP 负载为 4 字节帧号 + 最多 128 字节数据。
+    // 最后一帧保持原始长度，不补 0xFF，兼容最新协议文档里
+    // “开阳升级协议最后一帧升级数据的 FF 去掉”的要求。
     build_sequential_chunks(&bytes, 128, false)
 }
 

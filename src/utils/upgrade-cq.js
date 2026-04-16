@@ -129,11 +129,7 @@ function normalizeSpecialFrameValue(value) {
     throw new Error("特殊帧ID格式不正确")
   }
 
-  if (segments.length === 1) {
-    return `${segments[0]}-${segments[0]}`
-  }
-
-  return `${segments[0]}-${segments[1]}`
+  return segments[0]
 }
 
 export function buildUpgradeCqCode(config, burnFileType) {
