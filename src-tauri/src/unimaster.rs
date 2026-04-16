@@ -316,6 +316,8 @@ pub struct MeterTransportRequest {
     pub comm_type: u8,
     pub baud_code: u8,
     pub frame_type: u8,
+    pub cq_code: Option<String>,
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -913,11 +915,14 @@ pub fn set_meter_config_transport(
 ) -> Result<SimpleResult, String> {
     let started_at = Instant::now();
     let mut last_error = "串口已连接，但配置链路初始化未收到 0x37 响应".to_string();
-    let payload = [request.comm_type, request.baud_code, request.frame_type];
+    let payload = build_meter_config_transport_payload(&request)?;
 
     eprintln!(
-        "[perf][config-init][start] commType=0x{:02X} baudCode=0x{:02X} frameType=0x{:02X}",
-        request.comm_type, request.baud_code, request.frame_type
+        "[perf][config-init][start] commType=0x{:02X} baudCode=0x{:02X} frameType=0x{:02X} payloadLen={}",
+        request.comm_type,
+        request.baud_code,
+        request.frame_type,
+        payload.len()
     );
 
     if detect_three_a_activity(manager, METER_CONFIG_ACTIVITY_DETECT_MS).unwrap_or(false) {
@@ -2433,6 +2438,30 @@ fn build_legacy_upgrade_param_payload(file_name: &str) -> Result<Vec<u8>, String
     Ok(bytes)
 }
 
+fn build_model_cq_payload(model: &str, cq_code: &str) -> Result<Vec<u8>, String> {
+    let normalized_model = model.trim();
+    if normalized_model.is_empty() {
+        return Err("APP/UI 升级缺少型号".to_string());
+    }
+
+    let normalized_cq_code = cq_code.trim();
+    if normalized_cq_code.is_empty() {
+        return Err("APP/UI 升级缺少 CQ 配置串".to_string());
+    }
+
+    let combined_cq_code = format!(
+        "{}_{}",
+        normalized_model.to_ascii_uppercase(),
+        normalized_cq_code.to_ascii_uppercase()
+    );
+    let cq_bytes = combined_cq_code.as_bytes();
+    if cq_bytes.len() > u8::MAX as usize {
+        return Err("型号 + CQ 配置串过长".to_string());
+    }
+
+    Ok(cq_bytes.to_vec())
+}
+
 fn build_upgrade_param_payload(request: &RealtimeInitRequest) -> Result<Vec<u8>, String> {
     let burn_file_type = request.burn_file_type;
     let maybe_cq_code = request
@@ -2443,18 +2472,7 @@ fn build_upgrade_param_payload(request: &RealtimeInitRequest) -> Result<Vec<u8>,
 
     if matches!(burn_file_type, 1 | 2) {
         let cq_code = maybe_cq_code.ok_or_else(|| "APP/UI 升级缺少 CQ 配置串".to_string())?;
-        let model = request.model.trim();
-        if model.is_empty() {
-            return Err("APP/UI 升级缺少型号".to_string());
-        }
-
-        let combined_cq_code = format!("{}_{}", model.to_ascii_uppercase(), cq_code);
-        let cq_bytes = combined_cq_code.as_bytes();
-        if cq_bytes.len() > u8::MAX as usize {
-            return Err("型号 + CQ 配置串过长".to_string());
-        }
-
-        return Ok(cq_bytes.to_vec());
+        return build_model_cq_payload(&request.model, cq_code);
     }
 
     let file_name = request
@@ -2463,6 +2481,25 @@ fn build_upgrade_param_payload(request: &RealtimeInitRequest) -> Result<Vec<u8>,
         .filter(|value| !value.trim().is_empty())
         .unwrap_or(request.model.as_str());
     build_legacy_upgrade_param_payload(file_name)
+}
+
+fn build_meter_config_transport_payload(request: &MeterTransportRequest) -> Result<Vec<u8>, String> {
+    let maybe_cq_code = request
+        .cq_code
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let maybe_model = request
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+
+    if let (Some(model), Some(cq_code)) = (maybe_model, maybe_cq_code) {
+        return build_model_cq_payload(model, cq_code);
+    }
+
+    Ok(vec![request.comm_type, request.baud_code, request.frame_type])
 }
 
 fn build_offline_upgrade_param_payload(

@@ -480,6 +480,8 @@ async function initTransport(options = {}) {
       commType: transportForm.commType,
       baudCode: transportForm.baudCode,
       frameType: transportForm.commType === 0x02 ? transportForm.frameType : 0,
+      cqCode: String(deviceStore.upgradeCqCode || "").trim().toUpperCase(),
+      model: String(deviceStore.currentModel || "").trim().toUpperCase(),
     })
 
     linkReady.value = result.success
