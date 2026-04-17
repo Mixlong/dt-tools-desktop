@@ -66,31 +66,28 @@ jobs:
           prerelease: false
           args: --target ${{ matrix.target }}
 
-      - name: Rewrite latest.json URLs to OSS
+      - name: Generate latest.json
         shell: bash
         run: |
-          OSS_BASE="https://bikewise.oss-cn-shenzhen.aliyuncs.com/d-space/dt-tools-desktop"
+          APP_VERSION=$(node -e "const fs=require('fs');const c=JSON.parse(fs.readFileSync('package.json','utf8'));process.stdout.write(c.version)")
           BUNDLE_DIR="src-tauri/target/${{ matrix.target }}/release/bundle"
-          OSS_ALIAS_DIR="${{ startsWith(matrix.platform, 'macos') && 'darwin' || 'windows' }}"
+          GENERATED_LATEST="${RUNNER_TEMP}/latest-${{ matrix.target }}.json"
 
-          find "$BUNDLE_DIR" -name "latest.json" | while read -r jsonFile; do
-            echo "Rewriting URLs in: $jsonFile"
-            node -e "
-              const fs = require('fs')
-              const data = JSON.parse(fs.readFileSync('$jsonFile', 'utf8'))
-              const ossBase = '$OSS_BASE/$OSS_ALIAS_DIR'
-              for (const platform of Object.keys(data.platforms || {})) {
-                const entry = data.platforms[platform]
-                if (entry.url) {
-                  const filename = entry.url.split('/').pop()
-                  const newUrl = ossBase + '/' + filename
-                  console.log('  ' + platform + ': ' + entry.url + ' -> ' + newUrl)
-                  entry.url = newUrl
-                }
-              }
-              fs.writeFileSync('$jsonFile', JSON.stringify(data, null, 2), 'utf8')
-            "
-          done
+          if [ "${{ startsWith(matrix.platform, 'macos') }}" = "true" ]; then
+            ARTIFACT_FILE=$(find "$BUNDLE_DIR" -type f -name '*.tar.gz' | head -n 1)
+            SIG_FILE=$(find "$BUNDLE_DIR" -type f -name '*.sig' | head -n 1)
+            DOWNLOAD_URL="https://bikewise.oss-cn-shenzhen.aliyuncs.com/d-space/dt-tools-desktop/darwin/$(basename "$ARTIFACT_FILE")"
+          else
+            ARTIFACT_FILE=$(find "$BUNDLE_DIR" -type f -name '*.exe' | head -n 1)
+            SIG_FILE=$(find "$BUNDLE_DIR" -type f -name '*.sig' | head -n 1)
+            DOWNLOAD_URL="https://bikewise.oss-cn-shenzhen.aliyuncs.com/d-space/dt-tools-desktop/windows/$(basename "$ARTIFACT_FILE")"
+          fi
+
+          test -n "$ARTIFACT_FILE"
+          test -n "$SIG_FILE"
+
+          node -e "const fs=require('fs');const out=process.argv[1];const version=process.argv[2];const url=process.argv[3];const sigFile=process.argv[4];const sig=fs.readFileSync(sigFile,'utf8').trim();const data={version,notes:'',pub_date:new Date().toISOString(),url,signature:sig};fs.writeFileSync(out,JSON.stringify(data,null,2)+'\n');" "$GENERATED_LATEST" "$APP_VERSION" "$DOWNLOAD_URL" "$SIG_FILE"
+          echo "GENERATED_LATEST=$GENERATED_LATEST" >> "$GITHUB_ENV"
 
       - name: Install ossutil (macOS)
         if: startsWith(matrix.platform, 'macos')
@@ -134,11 +131,13 @@ jobs:
             ./ossutil-bin cp "$file" "oss://$OSS_BUCKET/$OSS_PREFIX/" -f -e oss-cn-shenzhen.aliyuncs.com -i "$OSS_ACCESS_KEY_ID" -k "$OSS_ACCESS_KEY_SECRET"
           done
 
-          # Upload latest.json (updater artifact)
-          find "$BUNDLE_DIR" -name "latest.json" | while read -r file; do
-            echo "Updating: $file"
-            ./ossutil-bin cp "$file" "oss://$OSS_BUCKET/$OSS_PREFIX/" -f -e oss-cn-shenzhen.aliyuncs.com -i "$OSS_ACCESS_KEY_ID" -k "$OSS_ACCESS_KEY_SECRET"
-          done
+          TAR_FILE=$(find "$BUNDLE_DIR" -type f -name "*.tar.gz" | head -n 1)
+          SIG_FILE=$(find "$BUNDLE_DIR" -type f -name "*.sig" | head -n 1)
+          test -n "$TAR_FILE"
+          test -n "$SIG_FILE"
+          ./ossutil-bin cp "$TAR_FILE" "oss://$OSS_BUCKET/$OSS_PREFIX/" -f -e oss-cn-shenzhen.aliyuncs.com -i "$OSS_ACCESS_KEY_ID" -k "$OSS_ACCESS_KEY_SECRET"
+          ./ossutil-bin cp "$SIG_FILE" "oss://$OSS_BUCKET/$OSS_PREFIX/" -f -e oss-cn-shenzhen.aliyuncs.com -i "$OSS_ACCESS_KEY_ID" -k "$OSS_ACCESS_KEY_SECRET"
+          ./ossutil-bin cp "$GENERATED_LATEST" "oss://$OSS_BUCKET/$OSS_PREFIX/latest.json" -f -e oss-cn-shenzhen.aliyuncs.com -i "$OSS_ACCESS_KEY_ID" -k "$OSS_ACCESS_KEY_SECRET"
         shell: bash
 
       - name: Upload to OSS (Windows)
@@ -165,6 +164,11 @@ jobs:
             & $ossutil --region $region cp $exe.FullName "oss://$($env:OSS_BUCKET)/$ossPrefix/" -f -e $env:OSS_ENDPOINT -i $env:OSS_ACCESS_KEY_ID -k $env:OSS_ACCESS_KEY_SECRET
           }
 
-          if ($latest) {
-            & $ossutil --region $region cp $latest.FullName "oss://$($env:OSS_BUCKET)/$ossPrefix/latest.json" -f -e $env:OSS_ENDPOINT -i $env:OSS_ACCESS_KEY_ID -k $env:OSS_ACCESS_KEY_SECRET
+          $sig = Get-ChildItem -Path $bundleDir -Recurse -Filter *.sig | Select-Object -First 1
+          if ($sig) {
+            & $ossutil --region $region cp $sig.FullName "oss://$($env:OSS_BUCKET)/$ossPrefix/" -f -e $env:OSS_ENDPOINT -i $env:OSS_ACCESS_KEY_ID -k $env:OSS_ACCESS_KEY_SECRET
+          }
+
+          if ($env:GENERATED_LATEST) {
+            & $ossutil --region $region cp $env:GENERATED_LATEST "oss://$($env:OSS_BUCKET)/$ossPrefix/latest.json" -f -e $env:OSS_ENDPOINT -i $env:OSS_ACCESS_KEY_ID -k $env:OSS_ACCESS_KEY_SECRET
           }
