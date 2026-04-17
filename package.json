@@ -1,6 +1,6 @@
 {
   "name": "dt-tools-desktop",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "DT-Tools desktop application",
   "author": "Digiwise",
   "license": "MIT",
@@ -12,6 +12,8 @@
     "build": "vite build",
     "build:desktop": "tauri build",
     "build:desktop:test": "tauri build --config src-tauri/tauri.test.conf.json",
+    "release:version": "node scripts/release-version.cjs",
+    "version:sync": "node scripts/sync-version.cjs",
     "tauri": "tauri",
     "preview": "vite preview"
   },
