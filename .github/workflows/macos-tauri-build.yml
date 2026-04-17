@@ -32,63 +32,11 @@ jobs:
       - shell: bash
         run: |
           node -e "const fs=require('fs');const p='src-tauri/tauri.conf.json';const j=JSON.parse(fs.readFileSync(p,'utf8'));j.bundle=j.bundle||{};j.bundle.targets=['app','dmg'];fs.writeFileSync(p,JSON.stringify(j,null,2)+'\n');"
-      - name: Prepare updater signing key
-        shell: bash
+      - name: Build macOS App + DMG Bundle
         env:
-          TAURI_SIGNING_PRIVATE_KEY_INPUT: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD_INPUT: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: |
-          node <<'NODE'
-          const fs = require("fs")
-          const os = require("os")
-          const path = require("path")
-
-          const rawKey = process.env.TAURI_SIGNING_PRIVATE_KEY_INPUT || ""
-          const rawPassword = process.env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD_INPUT || ""
-
-          if (!rawKey.trim()) {
-            throw new Error("GitHub secret TAURI_SIGNING_PRIVATE_KEY is empty")
-          }
-
-          if (!rawPassword) {
-            throw new Error("GitHub secret TAURI_SIGNING_PRIVATE_KEY_PASSWORD is empty")
-          }
-
-          let normalizedKey = rawKey.trim().replace(/\r\n/g, "\n")
-          const normalizedPassword = rawPassword.replace(/\r\n/g, "\n").replace(/\n+$/g, "")
-
-          if (!normalizedKey.includes("\n") && normalizedKey.includes("\\n")) {
-            normalizedKey = normalizedKey.replace(/\\n/g, "\n")
-          }
-
-          const compactKey = normalizedKey.replace(/\s+/g, "")
-          let resolvedKey = normalizedKey
-          let parsedKey = ""
-
-          if (!normalizedKey.startsWith("untrusted comment:") && /^[A-Za-z0-9+/=]+$/.test(compactKey) && compactKey.length % 4 === 0) {
-            try {
-              parsedKey = Buffer.from(compactKey, "base64").toString("utf8").trim().replace(/\r\n/g, "\n")
-            } catch {
-            }
-          }
-
-          if (normalizedKey.startsWith("untrusted comment:")) {
-            resolvedKey = normalizedKey
-          } else if (parsedKey.startsWith("untrusted comment:")) {
-            resolvedKey = parsedKey
-          } else {
-            throw new Error("TAURI_SIGNING_PRIVATE_KEY is not a valid minisign secret key. Store the raw key text or its base64-encoded content in GitHub Secrets.")
-          }
-
-          const keyFile = path.join(os.tmpdir(), "tauri-signing.key")
-          fs.writeFileSync(keyFile, resolvedKey, "utf8")
-
-          const envFile = process.env.GITHUB_ENV
-          fs.appendFileSync(envFile, `TAURI_SIGNING_PRIVATE_KEY=${keyFile}\n`)
-          fs.appendFileSync(envFile, `TAURI_SIGNING_PRIVATE_KEY_PATH=${keyFile}\n`)
-          fs.appendFileSync(envFile, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD<<__TAURI_PASSWORD__\n${normalizedPassword}\n__TAURI_PASSWORD__\n`)
-          NODE
-      - run: pnpm tauri build --bundles app,dmg
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: pnpm tauri build --bundles app,dmg
       - uses: actions/upload-artifact@v4
         if: always()
         with:
