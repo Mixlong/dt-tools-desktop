@@ -1,0 +1,216 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            target: aarch64-apple-darwin
+          - platform: macos-13
+            target: x86_64-apple-darwin
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Install frontend dependencies
+        run: pnpm install
+
+      - name: Prepare updater signing key
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY_INPUT: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD_INPUT: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          node <<'NODE'
+          const fs = require("fs")
+          const os = require("os")
+          const path = require("path")
+
+          const rawKey = process.env.TAURI_SIGNING_PRIVATE_KEY_INPUT || ""
+          const rawPassword = process.env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD_INPUT || ""
+
+          if (!rawKey.trim()) {
+            throw new Error("GitHub secret TAURI_SIGNING_PRIVATE_KEY is empty")
+          }
+
+          if (!rawPassword) {
+            throw new Error("GitHub secret TAURI_SIGNING_PRIVATE_KEY_PASSWORD is empty")
+          }
+
+          let normalizedKey = rawKey.trim().replace(/\r\n/g, "\n")
+          const normalizedPassword = rawPassword.replace(/\r\n/g, "\n").replace(/\n+$/g, "")
+
+          if (!normalizedKey.includes("\n") && normalizedKey.includes("\\n")) {
+            normalizedKey = normalizedKey.replace(/\\n/g, "\n")
+          }
+
+          const compactKey = normalizedKey.replace(/\s+/g, "")
+          let resolvedKey = normalizedKey
+          let parsedKey = ""
+
+          if (!normalizedKey.startsWith("untrusted comment:") && /^[A-Za-z0-9+/=]+$/.test(compactKey) && compactKey.length % 4 === 0) {
+            try {
+              parsedKey = Buffer.from(compactKey, "base64").toString("utf8").trim().replace(/\r\n/g, "\n")
+            } catch {
+            }
+          }
+
+          if (normalizedKey.startsWith("untrusted comment:")) {
+            resolvedKey = normalizedKey
+          } else if (parsedKey.startsWith("untrusted comment:")) {
+            resolvedKey = parsedKey
+          } else {
+            throw new Error("TAURI_SIGNING_PRIVATE_KEY is not a valid minisign secret key. Store the raw key text or its base64-encoded content in GitHub Secrets.")
+          }
+
+          const keyFile = path.join(os.tmpdir(), `tauri-signing-${process.platform}-${Date.now()}.key`)
+          fs.writeFileSync(keyFile, resolvedKey, "utf8")
+
+          const envFile = process.env.GITHUB_ENV
+          fs.appendFileSync(envFile, `TAURI_SIGNING_PRIVATE_KEY=${keyFile}\n`)
+          fs.appendFileSync(envFile, `TAURI_SIGNING_PRIVATE_KEY_PATH=${keyFile}\n`)
+          fs.appendFileSync(envFile, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD<<__TAURI_PASSWORD__\n${normalizedPassword}\n__TAURI_PASSWORD__\n`)
+          NODE
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "DT-Tools ${{ github.ref_name }}"
+          releaseBody: "See the assets to download and install this version."
+          releaseDraft: true
+          prerelease: false
+          args: --target ${{ matrix.target }}
+
+      - name: Rewrite latest.json URLs to OSS
+        shell: bash
+        run: |
+          OSS_BASE="https://bikewise.oss-cn-shenzhen.aliyuncs.com/d-space/dt-tools-desktop"
+          BUNDLE_DIR="src-tauri/target/${{ matrix.target }}/release/bundle"
+
+          find "$BUNDLE_DIR" -name "latest.json" | while read -r jsonFile; do
+            echo "Rewriting URLs in: $jsonFile"
+            node -e "
+              const fs = require('fs')
+              const data = JSON.parse(fs.readFileSync('$jsonFile', 'utf8'))
+              const ossBase = '$OSS_BASE/${{ matrix.target }}'
+              for (const platform of Object.keys(data.platforms || {})) {
+                const entry = data.platforms[platform]
+                if (entry.url) {
+                  const filename = entry.url.split('/').pop()
+                  const newUrl = ossBase + '/' + filename
+                  console.log('  ' + platform + ': ' + entry.url + ' -> ' + newUrl)
+                  entry.url = newUrl
+                }
+              }
+              fs.writeFileSync('$jsonFile', JSON.stringify(data, null, 2), 'utf8')
+            "
+          done
+
+      - name: Install ossutil
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ] && [ "$(uname -m)" = "arm64" ]; then
+            curl -o ossutil.zip https://gosspublic.alicdn.com/ossutil/1.7.18/ossutil-v1.7.18-mac-arm64.zip
+          elif [ "$RUNNER_OS" = "macOS" ]; then
+            curl -o ossutil.zip https://gosspublic.alicdn.com/ossutil/1.7.18/ossutil-v1.7.18-mac-amd64.zip
+          else
+            curl -o ossutil.zip https://gosspublic.alicdn.com/ossutil/1.7.18/ossutil-v1.7.18-windows-amd64.zip
+          fi
+          unzip -o ossutil.zip
+          # ossutil v1 binary may be named ossutil, ossutil64, or ossutil-v1.7.18-*
+          OSS_BIN=$(find . -maxdepth 2 -type f -name "ossutil*" ! -name "*.zip" ! -name "*.md" | head -1)
+          cp "$OSS_BIN" ossutil-bin
+          chmod +x ossutil-bin
+
+      - name: Upload to OSS (macOS)
+        if: startsWith(matrix.platform, 'macos')
+        env:
+          OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
+          OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
+        run: |
+          BUNDLE_DIR="src-tauri/target/${{ matrix.target }}/release/bundle"
+          OSS_BUCKET="bikewise"
+          OSS_PREFIX="d-space/dt-tools-desktop/${{ matrix.target }}"
+
+          echo "Uploading macOS bundle from: $BUNDLE_DIR"
+          echo "Target OSS path: $OSS_BUCKET/$OSS_PREFIX"
+
+          # Upload dmg files
+          find "$BUNDLE_DIR" -name "*.dmg" | while read -r file; do
+            echo "Uploading: $file"
+            ./ossutil-bin cp "$file" "oss://$OSS_BUCKET/$OSS_PREFIX/" -f -e oss-cn-shenzhen.aliyuncs.com -i "$OSS_ACCESS_KEY_ID" -k "$OSS_ACCESS_KEY_SECRET"
+          done
+
+          # Upload latest.json (updater artifact)
+          find "$BUNDLE_DIR" -name "latest.json" | while read -r file; do
+            echo "Updating: $file"
+            ./ossutil-bin cp "$file" "oss://$OSS_BUCKET/$OSS_PREFIX/" -f -e oss-cn-shenzhen.aliyuncs.com -i "$OSS_ACCESS_KEY_ID" -k "$OSS_ACCESS_KEY_SECRET"
+          done
+        shell: bash
+
+      - name: Upload to OSS (Windows)
+        if: matrix.platform == 'windows-latest'
+        env:
+          OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
+          OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
+        run: |
+          BUNDLE_DIR="src-tauri/target/${{ matrix.target }}/release/bundle"
+          OSS_BUCKET="bikewise"
+          OSS_PREFIX="d-space/dt-tools-desktop/${{ matrix.target }}"
+
+          echo "Uploading Windows bundle from: $BUNDLE_DIR"
+
+          # Upload exe/msi/nsis files
+          find "$BUNDLE_DIR" \( -name "*.exe" -o -name "*.msi" \) | while read -r file; do
+            echo "Uploading: $file"
+            ./ossutil-bin cp "$file" "oss://$OSS_BUCKET/$OSS_PREFIX/" -f -e oss-cn-shenzhen.aliyuncs.com -i "$OSS_ACCESS_KEY_ID" -k "$OSS_ACCESS_KEY_SECRET"
+          done
+
+          # Upload latest.json (updater artifact)
+          find "$BUNDLE_DIR" -name "latest.json" | while read -r file; do
+            echo "Uploading: $file"
+            ./ossutil-bin cp "$file" "oss://$OSS_BUCKET/$OSS_PREFIX/" -f -e oss-cn-shenzhen.aliyuncs.com -i "$OSS_ACCESS_KEY_ID" -k "$OSS_ACCESS_KEY_SECRET"
+          done
+        shell: bash

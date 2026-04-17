@@ -59,10 +59,10 @@ jobs:
           }
 
           const compactKey = normalizedKey.replace(/\s+/g, "")
-          let encodedKey = compactKey
+          let resolvedKey = normalizedKey
           let parsedKey = ""
 
-          if (/^[A-Za-z0-9+/=]+$/.test(compactKey) && compactKey.length % 4 === 0) {
+          if (!normalizedKey.startsWith("untrusted comment:") && /^[A-Za-z0-9+/=]+$/.test(compactKey) && compactKey.length % 4 === 0) {
             try {
               parsedKey = Buffer.from(compactKey, "base64").toString("utf8").trim().replace(/\r\n/g, "\n")
             } catch {
@@ -70,18 +70,18 @@ jobs:
           }
 
           if (normalizedKey.startsWith("untrusted comment:")) {
-            encodedKey = Buffer.from(normalizedKey, "utf8").toString("base64")
+            resolvedKey = normalizedKey
           } else if (parsedKey.startsWith("untrusted comment:")) {
-            encodedKey = compactKey
+            resolvedKey = parsedKey
           } else {
             throw new Error("TAURI_SIGNING_PRIVATE_KEY is not a valid minisign secret key. Store the raw key text or its base64-encoded content in GitHub Secrets.")
           }
 
           const keyFile = path.join(os.tmpdir(), "tauri-signing.key")
-          fs.writeFileSync(keyFile, Buffer.from(encodedKey, "base64").toString("utf8"), "utf8")
+          fs.writeFileSync(keyFile, resolvedKey, "utf8")
 
           const envFile = process.env.GITHUB_ENV
-          fs.appendFileSync(envFile, `TAURI_SIGNING_PRIVATE_KEY=${encodedKey}\n`)
+          fs.appendFileSync(envFile, `TAURI_SIGNING_PRIVATE_KEY=${keyFile}\n`)
           fs.appendFileSync(envFile, `TAURI_SIGNING_PRIVATE_KEY_PATH=${keyFile}\n`)
           fs.appendFileSync(envFile, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD<<__TAURI_PASSWORD__\n${normalizedPassword}\n__TAURI_PASSWORD__\n`)
           NODE
