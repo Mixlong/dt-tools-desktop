@@ -52,8 +52,22 @@ function isUpdaterConfigured() {
   )
 }
 
+function getUpdaterOsTarget() {
+  const platform = String(navigator?.userAgentData?.platform || navigator?.platform || "").toLowerCase()
+  if (platform.includes("win")) {
+    return "windows"
+  }
+  if (platform.includes("mac")) {
+    return "darwin"
+  }
+  return "darwin"
+}
+
 function resolveManualDownloadUrl(updateUrl) {
-  const fallback = "https://bikewise.oss-cn-shenzhen.aliyuncs.com/d-space/dt-tools-desktop/darwin/DT-Tools.tar.gz"
+  const target = getUpdaterOsTarget()
+  const fallback = target === "windows"
+    ? "https://bikewise.oss-cn-shenzhen.aliyuncs.com/d-space/dt-tools-desktop/windows/DT-Tools-x64-setup.exe"
+    : "https://bikewise.oss-cn-shenzhen.aliyuncs.com/d-space/dt-tools-desktop/darwin/DT-Tools.tar.gz"
   if (!updateUrl) return fallback
   try {
     const parsed = new URL(updateUrl)

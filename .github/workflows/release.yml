@@ -71,13 +71,14 @@ jobs:
         run: |
           OSS_BASE="https://bikewise.oss-cn-shenzhen.aliyuncs.com/d-space/dt-tools-desktop"
           BUNDLE_DIR="src-tauri/target/${{ matrix.target }}/release/bundle"
+          OSS_ALIAS_DIR="${{ startsWith(matrix.platform, 'macos') && 'darwin' || 'windows' }}"
 
           find "$BUNDLE_DIR" -name "latest.json" | while read -r jsonFile; do
             echo "Rewriting URLs in: $jsonFile"
             node -e "
               const fs = require('fs')
               const data = JSON.parse(fs.readFileSync('$jsonFile', 'utf8'))
-              const ossBase = '$OSS_BASE/${{ matrix.target }}'
+              const ossBase = '$OSS_BASE/$OSS_ALIAS_DIR'
               for (const platform of Object.keys(data.platforms || {})) {
                 const entry = data.platforms[platform]
                 if (entry.url) {
@@ -122,7 +123,7 @@ jobs:
         run: |
           BUNDLE_DIR="src-tauri/target/${{ matrix.target }}/release/bundle"
           OSS_BUCKET="bikewise"
-          OSS_PREFIX="d-space/dt-tools-desktop/${{ matrix.target }}"
+          OSS_PREFIX="d-space/dt-tools-desktop/darwin"
 
           echo "Uploading macOS bundle from: $BUNDLE_DIR"
           echo "Target OSS path: $OSS_BUCKET/$OSS_PREFIX"
@@ -156,7 +157,7 @@ jobs:
           $bundleDir = "src-tauri/target/${{ matrix.target }}/release/bundle"
           $exe = Get-ChildItem -Path $bundleDir -Recurse | Where-Object { $_.Extension -in @(".exe", ".msi") } | Select-Object -First 1
           $latest = Get-ChildItem -Path $bundleDir -Recurse -Filter latest.json | Select-Object -First 1
-          $ossPrefix = "d-space/dt-tools-desktop/${{ matrix.target }}"
+          $ossPrefix = "d-space/dt-tools-desktop/windows"
 
           Write-Host "Uploading Windows bundle from: $bundleDir"
 
