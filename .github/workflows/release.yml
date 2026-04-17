@@ -93,21 +93,28 @@ jobs:
             "
           done
 
-      - name: Install ossutil
+      - name: Install ossutil (macOS)
+        if: startsWith(matrix.platform, 'macos')
         shell: bash
         run: |
           if [ "$RUNNER_OS" = "macOS" ] && [ "$(uname -m)" = "arm64" ]; then
             curl -o ossutil.zip https://gosspublic.alicdn.com/ossutil/1.7.18/ossutil-v1.7.18-mac-arm64.zip
           elif [ "$RUNNER_OS" = "macOS" ]; then
             curl -o ossutil.zip https://gosspublic.alicdn.com/ossutil/1.7.18/ossutil-v1.7.18-mac-amd64.zip
-          else
-            curl -o ossutil.zip https://gosspublic.alicdn.com/ossutil/1.7.18/ossutil-v1.7.18-windows-amd64.zip
           fi
           unzip -o ossutil.zip
           # ossutil v1 binary may be named ossutil, ossutil64, or ossutil-v1.7.18-*
           OSS_BIN=$(find . -maxdepth 2 -type f -name "ossutil*" ! -name "*.zip" ! -name "*.md" | head -1)
           cp "$OSS_BIN" ossutil-bin
           chmod +x ossutil-bin
+
+      - name: Install ossutil (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://gosspublic.alicdn.com/ossutil/1.7.16/ossutil64.zip" -OutFile "ossutil64.zip"
+          Expand-Archive -Path "ossutil64.zip" -DestinationPath "."
+          Get-ChildItem -Recurse -Path "." | Where-Object { $_.Name -eq "ossutil64.exe" } | Select-Object -First 1 | ForEach-Object { $_.FullName } > ossutil_path.txt
 
       - name: Upload to OSS (macOS)
         if: startsWith(matrix.platform, 'macos')
@@ -137,25 +144,28 @@ jobs:
 
       - name: Upload to OSS (Windows)
         if: matrix.platform == 'windows-latest'
+        shell: pwsh
         env:
           OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
           OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
+          OSS_ENDPOINT: ${{ secrets.OSS_ENDPOINT }}
+          OSS_REGION: ${{ secrets.OSS_REGION }}
+          OSS_BUCKET: ${{ secrets.OSS_BUCKET }}
         run: |
-          BUNDLE_DIR="src-tauri/target/${{ matrix.target }}/release/bundle"
-          OSS_BUCKET="bikewise"
-          OSS_PREFIX="d-space/dt-tools-desktop/${{ matrix.target }}"
+          $region = $env:OSS_REGION
+          if (-not $region) { $region = "cn-shenzhen" }
+          $ossutil = Get-Content ossutil_path.txt | Select-Object -First 1
+          $bundleDir = "src-tauri/target/${{ matrix.target }}/release/bundle"
+          $exe = Get-ChildItem -Path $bundleDir -Recurse | Where-Object { $_.Extension -in @(".exe", ".msi") } | Select-Object -First 1
+          $latest = Get-ChildItem -Path $bundleDir -Recurse -Filter latest.json | Select-Object -First 1
+          $ossPrefix = "d-space/dt-tools-desktop/${{ matrix.target }}"
 
-          echo "Uploading Windows bundle from: $BUNDLE_DIR"
+          Write-Host "Uploading Windows bundle from: $bundleDir"
 
-          # Upload exe/msi/nsis files
-          find "$BUNDLE_DIR" \( -name "*.exe" -o -name "*.msi" \) | while read -r file; do
-            echo "Uploading: $file"
-            ./ossutil-bin cp "$file" "oss://$OSS_BUCKET/$OSS_PREFIX/" -f -e oss-cn-shenzhen.aliyuncs.com -i "$OSS_ACCESS_KEY_ID" -k "$OSS_ACCESS_KEY_SECRET"
-          done
+          if ($exe) {
+            & $ossutil --region $region cp $exe.FullName "oss://$($env:OSS_BUCKET)/$ossPrefix/" -f -e $env:OSS_ENDPOINT -i $env:OSS_ACCESS_KEY_ID -k $env:OSS_ACCESS_KEY_SECRET
+          }
 
-          # Upload latest.json (updater artifact)
-          find "$BUNDLE_DIR" -name "latest.json" | while read -r file; do
-            echo "Uploading: $file"
-            ./ossutil-bin cp "$file" "oss://$OSS_BUCKET/$OSS_PREFIX/" -f -e oss-cn-shenzhen.aliyuncs.com -i "$OSS_ACCESS_KEY_ID" -k "$OSS_ACCESS_KEY_SECRET"
-          done
-        shell: bash
+          if ($latest) {
+            & $ossutil --region $region cp $latest.FullName "oss://$($env:OSS_BUCKET)/$ossPrefix/latest.json" -f -e $env:OSS_ENDPOINT -i $env:OSS_ACCESS_KEY_ID -k $env:OSS_ACCESS_KEY_SECRET
+          }

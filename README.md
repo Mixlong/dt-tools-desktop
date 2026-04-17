@@ -16,3 +16,21 @@ pnpm dev:desktop
 pnpm build
 pnpm build:desktop
 ```
+
+## Version Sync
+
+```bash
+pnpm version:sync 0.1.1
+```
+
+This updates both `package.json` and `src-tauri/tauri.conf.json`.
+
+## Release
+
+```bash
+pnpm release:version 0.1.1
+pnpm release:version 0.1.1 -- --push
+```
+
+The release command syncs versions, creates a release commit, and tags `v<version>`.
+Use `--push` to push the current branch and tag to GitHub and trigger the tag-based release workflow.
