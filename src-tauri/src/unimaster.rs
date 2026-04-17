@@ -2744,7 +2744,8 @@ fn build_offline_upgrade_param_payload(
 
 fn command_timeout_ms(command: u8) -> u64 {
     match command {
-        0xE0 | 0xA7 | 0xA9 => 8_000,
+        0xAB => 120_000,
+        0xE0 | 0xA7 | 0xA9 => 120_000,
         _ => DEFAULT_TIMEOUT_MS,
     }
 }
