@@ -42,12 +42,14 @@ pnpm version:sync 0.1.1
 ```bash
 pnpm release:version 0.1.1
 pnpm release:version 0.1.1 -- --push
+pnpm release:version 0.1.1 -- --force --push
 ```
 
 说明：
 
 - `pnpm release:version 0.1.1`：同步版本号、提交版本变更、创建 `v0.1.1` 标签
 - `pnpm release:version 0.1.1 -- --push`：在上面的基础上继续推送分支和 tag，触发基于 tag 的 `release.yml`
+- `pnpm release:version 0.1.1 -- --force --push`：删除已存在的本地/远端同名 tag 后重新创建并推送，适合修复同版本重发
 
 ## 4. Required GitHub secrets
 

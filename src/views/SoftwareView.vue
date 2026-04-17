@@ -112,6 +112,15 @@
                 @click="resetLocalFile(item.kind)"
               />
               <q-btn
+                v-if="shouldShowCancelButton(item.kind)"
+                outline
+                color="warning"
+                :label="t('software.local.cancelUpgrade')"
+                :loading="upgradeCancelling"
+                :disable="upgradeCancelling"
+                @click="handleCancelUpgrade"
+              />
+              <q-btn
                 push
                 color="positive"
                 :label="t('software.local.startUpgrade')"
@@ -132,8 +141,9 @@ import { listen } from "@tauri-apps/api/event"
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue"
 import { useI18n } from "vue-i18n"
 import { useDeviceStore } from "@/store/device"
-import { notifyError, notifySuccess } from "@/services/ui"
+import { confirmAction, notifyError, notifyInfo, notifySuccess } from "@/services/ui"
 import {
+  cancelRealtimeUpgrade,
   fileToBytes,
   loadProgramBurningBundle,
   performRealtimeUpgrade,
@@ -171,6 +181,7 @@ const localFileMetas = [
 const onlineBundleLoading = ref(false)
 const syncLoading = ref(false)
 const upgradeLoading = ref(false)
+const upgradeCancelling = ref(false)
 const upgradingKind = ref("")
 const onlineBundleForm = reactive({
   codeOrSn: "8QeJB9d3c8",
@@ -528,6 +539,10 @@ function isUpgradeLocked(kind) {
   return upgradeLoading.value && upgradingKind.value !== kind
 }
 
+function shouldShowCancelButton(kind) {
+  return upgradeLoading.value && (!upgradingKind.value || upgradingKind.value === kind)
+}
+
 async function runSync(selectedFiles, groupState, sourceLabel) {
   if (!selectedFiles.length) {
     notifyError(t("software.local.errors.selectFileFirst"))
@@ -627,14 +642,47 @@ async function runUpgrade(selectedFiles, groupState, sourceLabel) {
     notifySuccess(operationState.stage || t("software.local.upgrade.completed"))
   } catch (error) {
     await syncDisconnectedStateIfNeeded(error)
-    operationState.stage = t("software.local.upgrade.failed")
-    appendLogs([String(error)], currentLogKinds)
-    notifyError(error)
+    const message = String(error?.message ?? error ?? "")
+    if (message.includes("升级已中断")) {
+      operationState.stage = t("software.local.upgrade.cancelled")
+      appendLogs([t("software.local.upgrade.cancelled")], currentLogKinds)
+      notifyInfo(t("software.local.upgrade.cancelled"))
+    } else {
+      operationState.stage = t("software.local.upgrade.failed")
+      appendLogs([message], currentLogKinds)
+      notifyError(error)
+    }
   } finally {
     currentUpgradeGroup = null
     deviceStore.setUpgradeInProgress(false)
     upgradeLoading.value = false
+    upgradeCancelling.value = false
     upgradingKind.value = ""
+  }
+}
+
+async function handleCancelUpgrade() {
+  if (!upgradeLoading.value || upgradeCancelling.value) {
+    return
+  }
+
+  const confirmed = await confirmAction({
+    title: t("software.local.cancelUpgrade"),
+    message: t("software.local.upgrade.cancelConfirm"),
+    ok: t("software.local.cancelUpgrade"),
+  })
+  if (!confirmed) {
+    return
+  }
+
+  upgradeCancelling.value = true
+  try {
+    const result = await cancelRealtimeUpgrade()
+    appendLogs([result.message], currentLogKinds)
+    notifyInfo(result.message)
+  } catch (error) {
+    upgradeCancelling.value = false
+    notifyError(error)
   }
 }
 

@@ -262,6 +262,17 @@ async fn perform_realtime_upgrade(
 }
 
 #[tauri::command]
+fn cancel_realtime_upgrade(
+    serial_manager: tauri::State<unimaster::SerialManager>,
+) -> Result<unimaster::SimpleResult, String> {
+    serial_manager.request_upgrade_cancel()?;
+    Ok(unimaster::SimpleResult {
+        success: true,
+        message: "已请求中断升级，正在等待当前步骤安全结束".to_string(),
+    })
+}
+
+#[tauri::command]
 async fn prepare_offline_upgrade(
     request: unimaster::OfflinePrepareRequest,
     app: tauri::AppHandle,
@@ -366,6 +377,7 @@ pub fn run() {
             read_access_state,
             init_realtime_upgrade,
             perform_realtime_upgrade,
+            cancel_realtime_upgrade,
             prepare_offline_upgrade,
             load_program_burning_bundle
         ])

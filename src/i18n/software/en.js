@@ -111,6 +111,7 @@ export default {
     waitingLogs: "Waiting for {label} logs...",
     selectFile: "Select {label}",
     clear: "Clear",
+    cancelUpgrade: "Cancel Upgrade",
     startUpgrade: "Start Upgrade",
     fileState: {
       empty: "Empty",
@@ -135,6 +136,8 @@ export default {
       inProgress: "Upgrading",
       started: "Upgrade started immediately, source: {source}",
       completed: "Realtime upgrade completed",
+      cancelled: "Upgrade cancelled",
+      cancelConfirm: "Stop the current upgrade task? The app will stop after the current step finishes safely.",
       failed: "Upgrade failed",
       fileFailed: "{fileName} upgrade failed",
     },

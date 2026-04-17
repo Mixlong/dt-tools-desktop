@@ -30,7 +30,9 @@ This updates both `package.json` and `src-tauri/tauri.conf.json`.
 ```bash
 pnpm release:version 0.1.1
 pnpm release:version 0.1.1 -- --push
+pnpm release:version 0.1.1 -- --force --push
 ```
 
 The release command syncs versions, creates a release commit, and tags `v<version>`.
 Use `--push` to push the current branch and tag to GitHub and trigger the tag-based release workflow.
+Use `--force` only when you need to replace an existing local/remote tag for the same version.

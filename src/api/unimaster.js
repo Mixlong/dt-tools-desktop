@@ -58,6 +58,10 @@ export function performRealtimeUpgrade(request) {
   return invoke("perform_realtime_upgrade", { request })
 }
 
+export function cancelRealtimeUpgrade() {
+  return invoke("cancel_realtime_upgrade")
+}
+
 export function prepareOfflineUpgrade(request) {
   return invoke("prepare_offline_upgrade", { request })
 }

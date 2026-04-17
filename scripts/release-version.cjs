@@ -8,6 +8,7 @@ const packageJsonPath = path.join(rootDir, "package.json")
 const args = process.argv.slice(2)
 const version = String(args[0] || "").trim()
 const shouldPush = args.includes("--push")
+const shouldForce = args.includes("--force")
 
 if (!version) {
   throw new Error("请提供版本号，例如：pnpm release:version 0.1.1")
@@ -37,6 +38,10 @@ const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"))
 const currentVersion = String(packageJson.version || "").trim()
 const tagName = `v${version}`
 
+function hasRemoteTag(name) {
+  return Boolean(getOutput("git", ["ls-remote", "--tags", "origin", name]))
+}
+
 if (currentVersion === version) {
   console.log(`当前版本已经是 ${version}，继续检查 git tag 和提交状态`)
 } else {
@@ -45,7 +50,15 @@ if (currentVersion === version) {
 
 const existingTag = getOutput("git", ["tag", "--list", tagName])
 if (existingTag) {
-  throw new Error(`git tag 已存在: ${tagName}`)
+  if (!shouldForce) {
+    throw new Error(`git tag 已存在: ${tagName}`)
+  }
+
+  run("git", ["tag", "-d", tagName])
+}
+
+if (shouldForce && hasRemoteTag(tagName)) {
+  run("git", ["push", "origin", `:refs/tags/${tagName}`])
 }
 
 run("git", ["add", "package.json", "src-tauri/tauri.conf.json"])

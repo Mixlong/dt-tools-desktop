@@ -111,6 +111,7 @@ export default {
     waitingLogs: "等待{label}日志输出...",
     selectFile: "选择{label}",
     clear: "清除",
+    cancelUpgrade: "中断升级",
     startUpgrade: "开始升级",
     fileState: {
       empty: "空",
@@ -135,6 +136,8 @@ export default {
       inProgress: "升级中",
       started: "开始立即升级，来源：{source}",
       completed: "实时升级完成",
+      cancelled: "升级已中断",
+      cancelConfirm: "确定要中断当前升级任务吗？系统会在当前步骤安全结束后停止。",
       failed: "升级失败",
       fileFailed: "{fileName} 升级失败",
     },
