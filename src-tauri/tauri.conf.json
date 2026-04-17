@@ -56,7 +56,7 @@
       "endpoints": [
         "https://bikewise.oss-cn-shenzhen.aliyuncs.com/d-space/dt-tools-desktop/{{target}}/latest.json"
       ],
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEYxMEVDM0JCOEVDMDM4QzcKUldUSE9NQ091OE1POFkwQnN2clFOZHdJNXB3c1NGVEI5Z1AvODhpV3JuWnpoTldkMWcvZDgzR1YK"
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQyMTc4RDdCNkQwRjFFRjQKUldUMEhnOXRlNDBYMG5wS1JZek5YdjhBU0JhMUt1NEVhbkdKUm8ySzcvWlFmbTgxNG1QZHdCUFgK"
     }
   }
 }

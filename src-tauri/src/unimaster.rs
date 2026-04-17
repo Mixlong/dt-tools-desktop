@@ -1379,7 +1379,7 @@ where
             .filter(|value| !value.is_empty())
             .map(str::to_string);
         let init_protocol_type = init_request.protocol_type;
-        let init_result = init_realtime_upgrade(manager, init_request)?;
+        let init_result = init_realtime_upgrade(manager, init_request.clone())?;
         eprintln!(
             "[perf][upgrade][init] file={} kind={:?} ms={}",
             file.file_name,
@@ -1615,6 +1615,15 @@ where
                 chunks.len(),
                 &mut logs,
             )?;
+            if should_send_upgrade_param_after_protocol_prepare(protocol, kind) {
+                send_upgrade_param_command_with_logs(
+                    manager,
+                    0xA6,
+                    &init_request,
+                    "实时烧录参数初始化",
+                    &mut logs,
+                )?;
+            }
             let info_log = format!(
                 "{} {}耗时 {}",
                 file.file_name,
@@ -2996,6 +3005,14 @@ fn protocol_prep_label(protocol: UpgradeProtocol) -> &'static str {
         UpgradeProtocol::GaoBiao => "高标升级文件类型下发",
         UpgradeProtocol::Default => "预处理",
     }
+}
+
+fn should_send_upgrade_param_after_protocol_prepare(
+    protocol: UpgradeProtocol,
+    kind: UpgradeKind,
+) -> bool {
+    matches!(kind, UpgradeKind::App | UpgradeKind::Ui)
+        && matches!(protocol, UpgradeProtocol::KaiYang | UpgradeProtocol::GaoBiao)
 }
 
 fn pad_bytes_to_word(bytes: &[u8], fill: u8) -> Vec<u8> {
