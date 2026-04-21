@@ -214,7 +214,9 @@
 
                 <div class="device-connect-panel__version">
                   <div class="device-connect-panel__version-badge">
-                    <span>v{{ displayedAppVersion }}</span>
+                    <span class="device-connect-panel__version-entry" @click="handleDeveloperModeEntryClick">
+                      {{ displayedAppVersionLabel }}
+                    </span>
                     <q-btn
                       flat
                       round
@@ -360,6 +362,30 @@
       </q-card-actions>
     </q-card>
   </q-dialog>
+
+  <q-dialog v-model="developerModeDialogOpen" persistent no-shake>
+    <q-card class="cq-dialog cq-dialog--developer">
+      <q-card-section class="cq-dialog__section">
+        <div class="cq-dialog__title">开发模式验证</div>
+        <div class="cq-dialog__desc">输入密码后可切换到开发模式，显示升级详细日志。</div>
+      </q-card-section>
+      <q-card-section class="cq-dialog__section cq-dialog__section--compact">
+        <q-input
+          v-model="developerModePassword"
+          outlined
+          dense
+          autofocus
+          type="password"
+          label="开发模式密码"
+          @keyup.enter="submitDeveloperModePassword"
+        />
+      </q-card-section>
+      <q-card-actions align="right" class="cq-dialog__actions">
+        <q-btn flat label="取消" @click="closeDeveloperModeDialog" />
+        <q-btn unelevated color="primary" label="确认" @click="submitDeveloperModePassword" />
+      </q-card-actions>
+    </q-card>
+  </q-dialog>
 </template>
 
 <script setup>
@@ -371,10 +397,11 @@ import { getCurrentWindow } from "@tauri-apps/api/window"
 import { frontendLog, queryCommonDictType, queryModelConfigByComputerName, switchLanguage } from "@/api/unimaster"
 import { navSections } from "@/config/navigation"
 import { applyLocale, getCurrentLocale, getDeviceLanguageCode, getLocaleSwitchLabel, getTargetLocale } from "@/i18n"
+import { REMOTE_VERSION_REFRESH_EVENT } from "@/services/deviceVersion"
 import { notifyError, notifyInfo, notifySuccess } from "@/services/ui"
 import { useDeviceStore } from "@/store/device"
 import { getRemoteAppVersion } from "@/updater"
-import { saveThemeMode } from "@/utils/preferences"
+import { loadPreferences, savePreferences, saveThemeMode } from "@/utils/preferences"
 import { applyThemeMode } from "@/utils/theme"
 import tauriConfig from "../../src-tauri/tauri.conf.json"
 import {
@@ -399,6 +426,8 @@ const route = useRoute()
 const $q = useQuasar()
 const { t, locale } = useI18n()
 const deviceStore = useDeviceStore()
+const DEV_MODE_UNLOCK_CLICKS = 7
+const DEV_MODE_UNLOCK_PASSWORD = import.meta.env.VITE_DEV_MODE_PASSWORD || "dtkj2026dev"
 const appWindow = typeof window !== "undefined" && window.__TAURI_INTERNALS__ ? getCurrentWindow() : null
 const themeToggleEnabled = computed(() => !(typeof document !== "undefined" && document.documentElement.classList.contains("mac-theme-locked")))
 const connecting = ref(false)
@@ -415,6 +444,7 @@ const themeToggleLabel = computed(() => (currentThemeMode.value === "dark" ? "�
 const currentAppVersion = String(tauriConfig?.version || "0.1.0")
 const displayedAppVersion = ref(currentAppVersion)
 const versionRefreshing = ref(false)
+const displayedAppVersionLabel = computed(() => (displayedAppVersion.value ? `v${displayedAppVersion.value}` : "--"))
 const resolvedRouteTitle = computed(() => {
   if (route.meta?.titleKey) {
     return t(route.meta.titleKey)
@@ -425,12 +455,13 @@ const currentWindowTitle = computed(() => resolvedRouteTitle.value || "DT-Tools"
 let unlistenPortWatcher = null
 let startupHotplugPromptTimer = null
 let hiddenEntryTimer = null
+let developerModeEntryTimer = null
 const isConfigRoute = computed(() => route.path === "/config")
 const isSettingsRoute = computed(() => route.path === "/settings")
 const isSoftwareRoute = computed(() => route.path === "/software")
 const cqSyncKey = computed(() => `${route.path}:${deviceStore.softwareUpgradeTargetKind || "app"}`)
 const primaryNavSections = computed(() => (
-  navSections.filter((item) => ["/home", "/config", "/software"].includes(item.to))
+  navSections.filter((item) => ["/config", "/software", "/unimaster-about"].includes(item.to))
 ))
 const manualModelInput = ref("")
 const panelCqCode = computed({
@@ -440,6 +471,9 @@ const panelCqCode = computed({
   },
 })
 const hiddenEntryClicks = ref(0)
+const developerModeEntryClicks = ref(0)
+const developerModeDialogOpen = ref(false)
+const developerModePassword = ref("")
 const cqGeneratorDialogOpen = ref(false)
 const cqGeneratorRestoring = ref(false)
 const panelCqSyncing = ref(false)
@@ -493,6 +527,12 @@ const cqGeneratorPreview = computed(() => {
 
 function getPerfNow() {
   return typeof performance !== "undefined" ? performance.now() : Date.now()
+}
+
+function waitForDelay(delayMs) {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, delayMs)
+  })
 }
 
 function getShellPageStyle() {
@@ -690,6 +730,69 @@ function resetHiddenEntryCounter() {
   }
 }
 
+function resetDeveloperModeEntryCounter() {
+  developerModeEntryClicks.value = 0
+  if (developerModeEntryTimer) {
+    window.clearTimeout(developerModeEntryTimer)
+    developerModeEntryTimer = null
+  }
+}
+
+function closeDeveloperModeDialog() {
+  developerModeDialogOpen.value = false
+  developerModePassword.value = ""
+}
+
+function openDeveloperModeDialog() {
+  developerModePassword.value = ""
+  developerModeDialogOpen.value = true
+}
+
+function handleDeveloperModeEntryClick() {
+  if (deviceStore.developerModeEnabled) {
+    notifyInfo("开发模式已开启")
+    return
+  }
+
+  developerModeEntryClicks.value += 1
+  if (developerModeEntryTimer) {
+    window.clearTimeout(developerModeEntryTimer)
+  }
+
+  developerModeEntryTimer = window.setTimeout(() => {
+    resetDeveloperModeEntryCounter()
+  }, 1800)
+
+  if (developerModeEntryClicks.value < DEV_MODE_UNLOCK_CLICKS) {
+    return
+  }
+
+  resetDeveloperModeEntryCounter()
+  openDeveloperModeDialog()
+}
+
+function submitDeveloperModePassword() {
+  const normalized = String(developerModePassword.value || "").trim()
+
+  if (!normalized) {
+    notifyError("请输入开发模式密码")
+    return
+  }
+
+  if (normalized !== DEV_MODE_UNLOCK_PASSWORD) {
+    notifyError("开发模式密码错误")
+    return
+  }
+
+  deviceStore.developerModeEnabled = true
+  savePreferences({
+    ...loadPreferences(),
+    developerModeEnabled: true,
+  })
+  closeDeveloperModeDialog()
+  notifySuccess("开发模式已开启，详细日志已解锁")
+}
+
 function handleHiddenEntryClick() {
   hiddenEntryClicks.value += 1
   if (hiddenEntryTimer) {
@@ -860,25 +963,69 @@ async function copyCqCode() {
   }
 }
 
-async function refreshRemoteVersion() {
+async function refreshRemoteVersion(options = {}) {
+  const {
+    silent = false,
+    retries = silent ? 2 : 0,
+    retryDelayMs = 450,
+  } = options
+
   if (versionRefreshing.value) {
-    return
+    return false
   }
 
   versionRefreshing.value = true
   try {
-    const remoteVersion = await getRemoteAppVersion()
-    displayedAppVersion.value = String(remoteVersion || currentAppVersion)
-    if (displayedAppVersion.value === currentAppVersion) {
-      notifyInfo(`当前已是最新版本 v${currentAppVersion}`)
-    } else {
-      notifySuccess(`检测到远程版本 v${displayedAppVersion.value}`)
+    let lastError = null
+
+    for (let attempt = 0; attempt <= retries; attempt += 1) {
+      try {
+        const remoteVersion = String(await getRemoteAppVersion() || currentAppVersion).trim()
+
+        if (!remoteVersion) {
+          throw new Error("未读取到项目版本号")
+        }
+
+        const previousVersion = displayedAppVersion.value
+        displayedAppVersion.value = remoteVersion
+
+        if (!silent) {
+          if (remoteVersion === currentAppVersion) {
+            notifyInfo(`当前已是最新版本 v${currentAppVersion}`)
+          } else if (remoteVersion === previousVersion) {
+            notifyInfo(`检测到新版本 v${remoteVersion}`)
+          } else {
+            notifySuccess(`检测到新版本 v${remoteVersion}`)
+          }
+        }
+        return true
+      } catch (error) {
+        lastError = error
+        if (attempt < retries) {
+          await waitForDelay(retryDelayMs)
+        }
+      }
     }
-  } catch (error) {
-    notifyError(error)
+
+    if (!silent && lastError) {
+      notifyError(lastError)
+    } else if (lastError) {
+      console.warn("[layout] failed to refresh remote version:", lastError)
+    }
   } finally {
     versionRefreshing.value = false
   }
+
+  return false
+}
+
+function handleRemoteVersionRefreshRequest(event) {
+  const detail = event?.detail || {}
+  refreshRemoteVersion({
+    silent: detail.silent !== false,
+    retries: Number.isInteger(detail.retries) ? detail.retries : undefined,
+    retryDelayMs: Number.isInteger(detail.retryDelayMs) ? detail.retryDelayMs : undefined,
+  })
 }
 
 function openAdapterDialog() {
@@ -964,6 +1111,7 @@ async function handleLanguageChange(targetLocale) {
 
 onMounted(async () => {
   document.body.addEventListener("mousedown", handleGlobalHiddenEntryClick)
+  window.addEventListener(REMOTE_VERSION_REFRESH_EVENT, handleRemoteVersionRefreshRequest)
   const startupStartedAt = getPerfNow()
   logStartupPerf("mount-start", { route: route.path })
 
@@ -1071,7 +1219,9 @@ watch(
 
 onUnmounted(() => {
   document.body.removeEventListener("mousedown", handleGlobalHiddenEntryClick)
+  window.removeEventListener(REMOTE_VERSION_REFRESH_EVENT, handleRemoteVersionRefreshRequest)
   resetHiddenEntryCounter()
+  resetDeveloperModeEntryCounter()
 
   if (startupHotplugPromptTimer) {
     window.clearTimeout(startupHotplugPromptTimer)
@@ -1083,6 +1233,20 @@ onUnmounted(() => {
     unlistenPortWatcher = null
   }
 })
+
+watch(
+  () => deviceStore.connectionStatus,
+  async (status, previousStatus) => {
+    if (status === previousStatus) {
+      return
+    }
+
+    if (status === "CONNECTED") {
+      await refreshRemoteVersion({ silent: true, retries: 2, retryDelayMs: 450 })
+      return
+    }
+  },
+)
 
 watch(
   () => deviceStore.pendingHotplugPort,
@@ -1625,6 +1789,11 @@ async function toggleConnection() {
   line-height: 1;
   font-weight: 800;
   color: var(--dt-text-secondary);
+}
+
+.device-connect-panel__version-entry {
+  cursor: pointer;
+  user-select: none;
 }
 
 .device-connect-panel__version-refresh {

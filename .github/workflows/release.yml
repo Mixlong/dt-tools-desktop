@@ -6,14 +6,15 @@ on:
       - "v*"
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   release:
-    permissions:
-      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -27,7 +28,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -40,14 +41,16 @@ jobs:
           workspaces: src-tauri -> target
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 22
 
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 9
+      - name: Enable pnpm via Corepack
+        shell: bash
+        run: |
+          corepack enable
+          corepack prepare pnpm@9 --activate
+          pnpm --version
 
       - name: Install frontend dependencies
         run: pnpm install
@@ -55,16 +58,32 @@ jobs:
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: "DT-Tools ${{ github.ref_name }}"
-          releaseBody: "See the assets to download and install this version."
-          releaseDraft: true
-          prerelease: false
           args: --target ${{ matrix.target }}
+
+      - name: Upload workflow artifacts (macOS)
+        if: startsWith(matrix.platform, 'macos')
+        uses: actions/upload-artifact@v4
+        with:
+          name: bundle-${{ matrix.target }}
+          if-no-files-found: error
+          path: |
+            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.dmg
+            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.tar.gz
+            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.sig
+
+      - name: Upload workflow artifacts (Windows)
+        if: matrix.platform == 'windows-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: bundle-${{ matrix.target }}
+          if-no-files-found: error
+          path: |
+            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.exe
+            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.msi
+            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.sig
 
       - name: Generate latest.json
         shell: bash

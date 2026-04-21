@@ -1,6 +1,22 @@
 import { invoke } from "@tauri-apps/api/core"
 
 const MODEL_QUERY_BASE_URL = "http://192.168.2.114:8111"
+const LEGACY_UNIMASTER_BASE_URL = "http://test-pucs.riding-evolved.com"
+const REMOTE_ASSET_CODES = new Set([
+  "UniMaster_Upgrade_APP",
+  "UniMaster_Upgrade_UI2",
+])
+
+function normalizeBaseUrl(baseUrl, fallbackBaseUrl = LEGACY_UNIMASTER_BASE_URL) {
+  const normalized = String(baseUrl || fallbackBaseUrl || "").trim().replace(/\/+$/, "")
+  return normalized || LEGACY_UNIMASTER_BASE_URL
+}
+
+async function buildLegacySignedHeaders(pathname) {
+  return invoke("build_legacy_signed_headers", {
+    pathname: String(pathname || "").trim(),
+  })
+}
 
 export function listSerialPorts() {
   return invoke("list_serial_ports")
@@ -56,6 +72,10 @@ export function initRealtimeUpgrade(request) {
 
 export function performRealtimeUpgrade(request) {
   return invoke("perform_realtime_upgrade", { request })
+}
+
+export function performUniMasterVersionUpgrade(request) {
+  return invoke("perform_unimaster_version_upgrade", { request })
 }
 
 export function cancelRealtimeUpgrade() {
@@ -120,6 +140,86 @@ export async function queryCommonDictType(dictType) {
   }
 
   return Array.isArray(payload?.data) ? payload.data : []
+}
+
+export async function queryUpgradeResource(code, options = {}) {
+  const normalizedCode = String(code || "").trim()
+  if (!REMOTE_ASSET_CODES.has(normalizedCode)) {
+    throw new Error("升级资源类型不受支持")
+  }
+
+  const baseUrl = normalizeBaseUrl(options.baseUrl)
+  const pathname = "/sts/type/update"
+  const url = `${baseUrl}${pathname}?code=${encodeURIComponent(normalizedCode)}`
+  const signedHeaders = await buildLegacySignedHeaders(pathname)
+  const response = await fetch(url, {
+    method: "GET",
+    headers: {
+      Accept: "application/json",
+      ...signedHeaders,
+    },
+  })
+
+  if (!response.ok) {
+    let payload = null
+    try {
+      payload = await response.json()
+    } catch {
+      payload = null
+    }
+
+    const backendMessage = String(payload?.msg || payload?.message || "").trim()
+    const error = new Error("远程升级资源获取失败")
+    error.statusCode = response.status
+    error.backendMessage = backendMessage
+    error.userMessage = "远程升级资源获取失败"
+    throw error
+  }
+
+  const payload = await response.json()
+  if (Number(payload?.code) !== 200) {
+    const backendMessage = String(payload?.msg || payload?.message || "升级资源查询返回异常").trim()
+    const error = new Error("远程升级资源获取失败")
+    error.statusCode = 200
+    error.backendMessage = backendMessage
+    error.userMessage = "远程升级资源获取失败"
+    throw error
+  }
+
+  return payload?.data ?? null
+}
+
+export function resolveRemoteAssetUrl(url, options = {}) {
+  const normalizedUrl = String(url || "").trim()
+  if (!normalizedUrl) {
+    return ""
+  }
+
+  if (/^https?:\/\//i.test(normalizedUrl)) {
+    return normalizedUrl
+  }
+
+  const baseUrl = normalizeBaseUrl(options.baseUrl)
+  return `${baseUrl}${normalizedUrl.startsWith("/") ? "" : "/"}${normalizedUrl}`
+}
+
+export async function downloadUpgradeFileBytes(url, options = {}) {
+  const resolvedUrl = resolveRemoteAssetUrl(url, options)
+  if (!resolvedUrl) {
+    throw new Error("升级文件地址为空")
+  }
+
+  const response = await fetch(resolvedUrl)
+  if (!response.ok) {
+    throw new Error(`升级文件下载失败，状态码 ${response.status}`)
+  }
+
+  const buffer = await response.arrayBuffer()
+  return Array.from(new Uint8Array(buffer))
+}
+
+export function getLegacyUniMasterBaseUrl() {
+  return LEGACY_UNIMASTER_BASE_URL
 }
 
 export function setMeterConfigTransport(request) {

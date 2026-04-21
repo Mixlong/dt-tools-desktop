@@ -24,7 +24,10 @@
                 </div>
               </div>
             </div>
-            <div :class="['file-card__dropzone', { 'file-card__dropzone--ready': localFiles[item.kind].fileName }]">
+            <div
+              :class="['file-card__dropzone', { 'file-card__dropzone--ready': localFiles[item.kind].fileName }]"
+              @dblclick="openLocalFile(item.kind)"
+            >
               <div
                 :class="[
                   'file-card__dropzone-icon',
@@ -141,6 +144,7 @@ import { listen } from "@tauri-apps/api/event"
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue"
 import { useI18n } from "vue-i18n"
 import { useDeviceStore } from "@/store/device"
+import { requestRemoteVersionRefresh } from "@/services/deviceVersion"
 import { confirmAction, notifyError, notifyInfo, notifySuccess } from "@/services/ui"
 import {
   cancelRealtimeUpgrade,
@@ -151,6 +155,7 @@ import {
   queryModelConfigByComputerName,
 } from "@/api/unimaster"
 import { buildUpgradeCqStateFromModelConfig } from "@/utils/model-config"
+import { formatCompactUpgradeErrorMessage, formatDisplayedUpgradeProgressLog, shouldUseVerboseUpgradeLogs } from "@/utils/upgrade-log"
 import { prepareMeterConfigUpgradeFile } from "@/utils/unimaster-config"
 import {
   buildUpgradeCqCode,
@@ -273,6 +278,7 @@ onBeforeUnmount(() => {
 const hasActiveLocalFiles = computed(() => localKindOrder.some((kind) => localFiles[kind].isActive))
 const sharedCqCode = computed(() => String(deviceStore.upgradeCqCode || "").trim().toUpperCase())
 const isDeviceConnected = computed(() => deviceStore.connectionStatus === "CONNECTED")
+const verboseUpgradeLogsEnabled = computed(() => shouldUseVerboseUpgradeLogs(deviceStore.developerModeEnabled))
 
 async function refreshConnectionStatus() {
   try {
@@ -319,6 +325,10 @@ function buildRealtimeInitPreviewFrame(request) {
 }
 
 function logRealtimeInitPreview(request) {
+  if (!verboseUpgradeLogsEnabled.value) {
+    return
+  }
+
   const { combinedCqCode, frame } = buildRealtimeInitPreviewFrame(request)
   console.log("[serial][55][tx-preview][cmd=0xA6] model_cq =", combinedCqCode)
   console.log("[serial][55][tx-preview][cmd=0xA6]", frame.map((value) => toHexByte(value)).join(" "))
@@ -613,8 +623,10 @@ async function runUpgrade(selectedFiles, groupState, sourceLabel) {
 
     for (const file of files) {
       const request = await buildRealtimeInitRequest(file)
-      appendLogs([`使用 CQ 配置：${request.cqCode}`], [file.kind])
-      appendLogs([`升级协议类型：0x${toHexByte(request.protocolType)}`], [file.kind])
+      if (verboseUpgradeLogsEnabled.value) {
+        appendLogs([`使用 CQ 配置：${request.cqCode}`], [file.kind])
+        appendLogs([`升级协议类型：0x${toHexByte(request.protocolType)}`], [file.kind])
+      }
       logRealtimeInitPreview(request)
     }
 
@@ -640,6 +652,11 @@ async function runUpgrade(selectedFiles, groupState, sourceLabel) {
     }
 
     notifySuccess(operationState.stage || t("software.local.upgrade.completed"))
+    requestRemoteVersionRefresh({
+      silent: true,
+      retries: 4,
+      retryDelayMs: 600,
+    })
   } catch (error) {
     await syncDisconnectedStateIfNeeded(error)
     const message = String(error?.message ?? error ?? "")
@@ -649,8 +666,9 @@ async function runUpgrade(selectedFiles, groupState, sourceLabel) {
       notifyInfo(t("software.local.upgrade.cancelled"))
     } else {
       operationState.stage = t("software.local.upgrade.failed")
-      appendLogs([message], currentLogKinds)
-      notifyError(error)
+      const displayMessage = verboseUpgradeLogsEnabled.value ? message : formatCompactUpgradeErrorMessage(message, upgradingKind.value || currentLogKinds[0])
+      appendLogs([displayMessage], currentLogKinds)
+      notifyError(displayMessage)
     }
   } finally {
     currentUpgradeGroup = null
@@ -678,8 +696,9 @@ async function handleCancelUpgrade() {
   upgradeCancelling.value = true
   try {
     const result = await cancelRealtimeUpgrade()
-    appendLogs([result.message], currentLogKinds)
-    notifyInfo(result.message)
+    const message = verboseUpgradeLogsEnabled.value ? result.message : "已请求取消升级"
+    appendLogs([message], currentLogKinds)
+    notifyInfo(message)
   } catch (error) {
     upgradeCancelling.value = false
     notifyError(error)
@@ -805,8 +824,9 @@ function applyUpgradeProgress(payload) {
     )
   }
 
-  if (payload.log) {
-    appendLogs([payload.log], payload.kind ? [payload.kind] : currentLogKinds)
+  const displayLog = formatDisplayedUpgradeProgressLog(payload, verboseUpgradeLogsEnabled.value)
+  if (displayLog) {
+    appendLogs([displayLog], payload.kind ? [payload.kind] : currentLogKinds)
   }
 }
 
@@ -816,7 +836,12 @@ function appendLogs(logs, targetKinds = []) {
     targetKinds
       .filter((kind) => Array.isArray(terminalLogs[kind]))
       .forEach((kind) => {
-        terminalLogs[kind].push(...logs)
+        logs.forEach((line) => {
+          if (!verboseUpgradeLogsEnabled.value && terminalLogs[kind][terminalLogs[kind].length - 1] === line) {
+            return
+          }
+          terminalLogs[kind].push(line)
+        })
         scrollTerminalToBottom(kind)
       })
   })
@@ -1310,6 +1335,18 @@ function clearLogs() {
   background: var(--software-dropzone-bg);
   box-sizing: border-box;
   overflow: hidden;
+  cursor: pointer;
+  user-select: none;
+  transition: border-color 0.18s ease, transform 0.18s ease, box-shadow 0.18s ease;
+}
+
+.file-card__dropzone:hover {
+  border-color: color-mix(in srgb, var(--dt-accent) 52%, var(--dt-border) 48%);
+  box-shadow: 0 8px 20px color-mix(in srgb, var(--dt-accent) 12%, transparent);
+}
+
+.file-card__dropzone:active {
+  transform: scale(0.998);
 }
 
 .file-card--active .file-card__dropzone {

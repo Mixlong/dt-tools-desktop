@@ -357,6 +357,16 @@ pub struct UpgradeSummary {
     pub logs: Vec<String>,
 }
 
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct UniMasterVersionUpgradeRequest {
+    pub kind: String,
+    pub file_name: String,
+    pub data: Vec<u8>,
+    pub chunks: Option<Vec<Vec<u8>>>,
+    pub ui_version: Option<String>,
+}
+
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct UpgradeProgressEvent {
@@ -918,6 +928,296 @@ pub fn read_version_snapshot(manager: &SerialManager) -> Result<VersionSnapshot,
         ui_version,
         version_items,
         flags,
+    })
+}
+
+fn parse_hex_string_bytes(text: &str) -> Result<Vec<u8>, String> {
+    let normalized = text.trim();
+    if normalized.is_empty() {
+        return Ok(Vec::new());
+    }
+    if normalized.len() % 2 != 0 {
+        return Err("十六进制字符串长度不是偶数".to_string());
+    }
+
+    let mut bytes = Vec::new();
+    for index in (0..normalized.len()).step_by(2) {
+        let value = u8::from_str_radix(&normalized[index..index + 2], 16)
+            .map_err(|error| format!("解析十六进制字符串失败: {error}"))?;
+        bytes.push(value);
+    }
+    Ok(bytes)
+}
+
+fn build_unimaster_app_chunks(data: &[u8]) -> Result<Vec<Vec<u8>>, String> {
+    let text = String::from_utf8_lossy(data);
+    let lines: Vec<&str> = text.lines().collect();
+    let mut chunks: Vec<Vec<u8>> = Vec::new();
+    let mut upper_address = [0u8; 2];
+    let mut current: Vec<u8> = Vec::new();
+    let max_frame_len = 116usize;
+
+    for line in lines {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if !line.starts_with(':') {
+            break;
+        }
+        if line.len() <= 11 {
+            continue;
+        }
+
+        let record = parse_hex_string_bytes(&line[1..])?;
+        if record.len() < 5 {
+            continue;
+        }
+        let record_type = record[3];
+        let data_len = record[0] as usize;
+        let data_pos = 4usize;
+        let address_pos = 1usize;
+
+        if record_type == 0x04 {
+            upper_address[0] = *record.get(data_pos).unwrap_or(&0);
+            upper_address[1] = *record.get(data_pos + 1).unwrap_or(&0);
+            continue;
+        }
+        if matches!(record_type, 0x01 | 0x05) {
+            continue;
+        }
+
+        if current.len() + data_len > max_frame_len && !current.is_empty() {
+            chunks.push(current);
+            current = Vec::new();
+        }
+
+        let address = record[address_pos..address_pos + 2].to_vec();
+        if current.is_empty() {
+            current.extend_from_slice(&upper_address);
+            current.extend_from_slice(&address);
+        }
+
+        let payload = &record[data_pos..data_pos + data_len];
+        current.extend_from_slice(payload);
+    }
+
+    if !current.is_empty() {
+        chunks.push(current);
+    }
+
+    if chunks.is_empty() {
+        return Err("UniMaster APP HEX 文件没有有效升级数据".to_string());
+    }
+
+    Ok(chunks)
+}
+
+fn build_unimaster_ui_text_chunks(data: &[u8]) -> Result<Vec<Vec<u8>>, String> {
+    let text = String::from_utf8_lossy(data);
+    let lines: Vec<&str> = text.lines().collect();
+    let mut chunks: Vec<Vec<u8>> = Vec::new();
+    let mut builder = String::new();
+    let max_frame_len = 128usize;
+    let mut empty_lines = 0usize;
+
+    for line in lines {
+        let line = line.trim();
+        if line.is_empty() {
+            empty_lines += 1;
+            if empty_lines >= 5 {
+                break;
+            }
+            continue;
+        }
+        empty_lines = 0;
+
+        if line.starts_with("//") {
+            continue;
+        }
+
+        let parts: Vec<&str> = line.split(':').collect();
+        if parts.len() < 2 {
+            continue;
+        }
+
+        let address = parts[0].trim();
+        let payload = parts[1].trim();
+        if builder.len() + payload.len() > max_frame_len && !builder.is_empty() {
+            chunks.push(parse_hex_string_bytes(&builder)?);
+            builder.clear();
+        }
+
+        if builder.is_empty() {
+            builder.push_str(address);
+        }
+        builder.push_str(payload);
+    }
+
+    if !builder.is_empty() {
+        chunks.push(parse_hex_string_bytes(&builder)?);
+    }
+
+    if chunks.is_empty() {
+        return Err("UniMaster UI TXT 文件没有有效升级数据".to_string());
+    }
+
+    Ok(chunks)
+}
+
+fn build_unimaster_ui_bin_chunks(data: &[u8]) -> Result<Vec<Vec<u8>>, String> {
+    if data.is_empty() {
+        return Err("UniMaster UI BIN 文件为空".to_string());
+    }
+
+    let mut chunks = Vec::new();
+    let mut address = 0u32;
+    for chunk in data.chunks(128) {
+        let mut payload = address.to_be_bytes().to_vec();
+        payload.extend_from_slice(chunk);
+        chunks.push(payload);
+        address += chunk.len() as u32;
+    }
+    Ok(chunks)
+}
+
+fn build_unimaster_version_chunks(
+    kind: UpgradeKind,
+    file_name: &str,
+    data: &[u8],
+) -> Result<Vec<Vec<u8>>, String> {
+    let extension = parse_file_extension(file_name);
+    match kind {
+        UpgradeKind::App => build_unimaster_app_chunks(data),
+        UpgradeKind::Ui => match extension.as_str() {
+            "txt" => build_unimaster_ui_text_chunks(data),
+            "bin" => build_unimaster_ui_bin_chunks(data),
+            other => Err(format!("UniMaster UI 文件仅支持 txt/bin: {other}")),
+        },
+        _ => Err("UniMaster 版本管理升级仅支持 APP/UI".to_string()),
+    }
+}
+
+fn unimaster_version_file_type(kind: UpgradeKind) -> Result<u8, String> {
+    match kind {
+        UpgradeKind::App => Ok(0x01),
+        UpgradeKind::Ui => Ok(0x02),
+        _ => Err("UniMaster 版本管理升级仅支持 APP/UI".to_string()),
+    }
+}
+
+pub fn perform_unimaster_version_upgrade(
+    manager: &SerialManager,
+    request: UniMasterVersionUpgradeRequest,
+) -> Result<UpgradeSummary, String> {
+    let kind = parse_upgrade_kind(&request.kind)?;
+    let file_type = unimaster_version_file_type(kind)?;
+    let chunks = if let Some(chunks) = request.chunks.clone() {
+        if chunks.is_empty() {
+            build_unimaster_version_chunks(kind, &request.file_name, &request.data)?
+        } else {
+            chunks
+        }
+    } else {
+        build_unimaster_version_chunks(kind, &request.file_name, &request.data)?
+    };
+    let mut logs = vec![format!("开始升级 {}", request.file_name)];
+
+    let erase = manager.send_command(0xA1, &[file_type], 120_000)?;
+    let erase_payload = hex_to_bytes(&erase.response_payload_hex)?;
+    if erase_payload.len() < 2 || erase_payload[0] != file_type || erase_payload[1] != 0x01 {
+        return Ok(UpgradeSummary {
+            success: false,
+            progress: 0,
+            stage: format!("{} 擦除失败", request.file_name),
+            logs,
+        });
+    }
+    logs.push(format!("{} 擦除成功", request.file_name));
+
+    let mut last_reported_percent = 0u8;
+    for (index, chunk) in chunks.iter().enumerate() {
+        let mut payload = vec![file_type];
+        payload.extend_from_slice(chunk);
+        logs.push(format!(
+            "[UniMaster][A2][tx][{}/{}] len={} payload={}",
+            index + 1,
+            chunks.len(),
+            payload.len(),
+            bytes_to_hex(&payload)
+        ));
+        let response = manager.send_command(0xA2, &payload, DEFAULT_TIMEOUT_MS)?;
+        let response_payload = hex_to_bytes(&response.response_payload_hex)?;
+        logs.push(format!(
+            "[UniMaster][A2][rx][{}/{}] payload={}",
+            index + 1,
+            chunks.len(),
+            if response.response_payload_hex.is_empty() {
+                "--".to_string()
+            } else {
+                response.response_payload_hex.clone()
+            }
+        ));
+        let write_ok = response_payload.first().copied().unwrap_or_default() == 0x01;
+        if !write_ok {
+            logs.push(format!(
+                "[UniMaster][A2][fail][{}/{}] raw-response={}",
+                index + 1,
+                chunks.len(),
+                response.response_hex
+            ));
+            return Ok(UpgradeSummary {
+                success: false,
+                progress: ((index * 100) / chunks.len().max(1)) as u8,
+                stage: format!("{} 写入失败", request.file_name),
+                logs,
+            });
+        }
+
+        let percent = (((index + 1) * 100) / chunks.len().max(1)) as u8;
+        if percent >= last_reported_percent.saturating_add(10) || index + 1 == chunks.len() {
+            last_reported_percent = percent;
+            logs.push(format!(
+                "{} 写入进度 {}%（{}/{}）",
+                request.file_name,
+                percent,
+                index + 1,
+                chunks.len()
+            ));
+        }
+    }
+
+    let mut finish_payload = vec![file_type];
+    if file_type == 0x02 {
+        let ui_version = request
+            .ui_version
+            .as_deref()
+            .unwrap_or("")
+            .trim()
+            .as_bytes()
+            .iter()
+            .copied()
+            .take(32)
+            .collect::<Vec<_>>();
+        finish_payload.extend_from_slice(&ui_version);
+    }
+    let finish = manager.send_command(0xA3, &finish_payload, DEFAULT_TIMEOUT_MS)?;
+    let finish_payload = hex_to_bytes(&finish.response_payload_hex)?;
+    if finish_payload.len() < 2 || finish_payload[0] != file_type || finish_payload[1] != 0x01 {
+        return Ok(UpgradeSummary {
+            success: false,
+            progress: 100,
+            stage: format!("{} 升级结束失败", request.file_name),
+            logs,
+        });
+    }
+
+    logs.push(format!("{} 升级完成", request.file_name));
+    Ok(UpgradeSummary {
+        success: true,
+        progress: 100,
+        stage: format!("{} 升级完成", request.file_name),
+        logs,
     })
 }
 

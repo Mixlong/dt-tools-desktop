@@ -4,6 +4,8 @@ import quasarLangEn from "quasar/lang/en-US"
 import quasarLangZh from "quasar/lang/zh-CN"
 import commonEn from "./common/en"
 import commonZh from "./common/zh"
+import aboutEn from "./about/en"
+import aboutZh from "./about/zh"
 import configEn from "./config/en"
 import configZh from "./config/zh"
 import deviceEn from "./device/en"
@@ -38,6 +40,7 @@ const quasarLangMap = {
 const messages = {
   "zh-CN": {
     common: commonZh,
+    about: aboutZh,
     nav: navZh,
     layout: layoutZh,
     home: homeZh,
@@ -51,6 +54,7 @@ const messages = {
   },
   "en-US": {
     common: commonEn,
+    about: aboutEn,
     nav: navEn,
     layout: layoutEn,
     home: homeEn,

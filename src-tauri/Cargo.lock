@@ -972,7 +972,7 @@ dependencies = [
 
 [[package]]
 name = "dt_tools_desktop"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "log",
  "md5",

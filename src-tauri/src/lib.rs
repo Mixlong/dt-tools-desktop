@@ -13,6 +13,7 @@ use tauri::{
     utils::config::Color,
     Emitter, Manager, WebviewWindow, WindowEvent,
 };
+use serde::Serialize;
 
 mod unimaster;
 
@@ -47,6 +48,39 @@ fn frontend_log(level: String, message: String) {
         "warn" => eprintln!("[frontend][warn] {message}"),
         _ => eprintln!("[frontend][info] {message}"),
     }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacySignedHeaders {
+    t: String,
+    sign: String,
+    id: String,
+}
+
+#[tauri::command]
+fn build_legacy_signed_headers(pathname: String) -> Result<LegacySignedHeaders, String> {
+    let normalized_path = pathname.trim();
+    if normalized_path.is_empty() {
+        return Err("签名路径不能为空".to_string());
+    }
+
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| format!("系统时间异常: {error}"))?
+        .as_secs();
+    let raw = format!(
+        "url={}||t={}||key={}",
+        normalized_path, timestamp, "opeddsaeaddadbcabf"
+    );
+    let first = format!("{:X}", md5::compute(raw));
+    let sign = format!("{:X}", md5::compute(&first[8..16]));
+
+    Ok(LegacySignedHeaders {
+        t: timestamp.to_string(),
+        sign,
+        id: "c4d89e9ed4f9d1c8d3e8bcee0684f076".to_string(),
+    })
 }
 
 #[tauri::command]
@@ -123,11 +157,16 @@ fn send_raw_command(
 }
 
 #[tauri::command]
-fn read_version_snapshot(
-    serial_manager: tauri::State<unimaster::SerialManager>,
+async fn read_version_snapshot(
+    app: tauri::AppHandle,
 ) -> Result<unimaster::VersionSnapshot, String> {
-    ensure_serial_idle(&serial_manager)?;
-    unimaster::read_version_snapshot(&serial_manager)
+    tauri::async_runtime::spawn_blocking(move || {
+        let serial_manager = app.state::<unimaster::SerialManager>();
+        ensure_serial_idle(&serial_manager)?;
+        unimaster::read_version_snapshot(&serial_manager)
+    })
+    .await
+    .map_err(|error| format!("执行版本快照读取任务失败: {error}"))?
 }
 
 #[tauri::command]
@@ -262,6 +301,22 @@ async fn perform_realtime_upgrade(
 }
 
 #[tauri::command]
+async fn perform_unimaster_version_upgrade(
+    request: unimaster::UniMasterVersionUpgradeRequest,
+    app: tauri::AppHandle,
+) -> Result<unimaster::UpgradeSummary, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let serial_manager = app.state::<unimaster::SerialManager>();
+        serial_manager.begin_upgrade()?;
+        let result = unimaster::perform_unimaster_version_upgrade(&serial_manager, request);
+        serial_manager.end_upgrade();
+        result
+    })
+    .await
+    .map_err(|error| format!("执行 UniMaster 版本升级任务失败: {error}"))?
+}
+
+#[tauri::command]
 fn cancel_realtime_upgrade(
     serial_manager: tauri::State<unimaster::SerialManager>,
 ) -> Result<unimaster::SimpleResult, String> {
@@ -359,6 +414,7 @@ pub fn run() {
             restart_app,
             save_text_file,
             frontend_log,
+            build_legacy_signed_headers,
             list_serial_ports,
             serial_status,
             connect_serial,
@@ -377,6 +433,7 @@ pub fn run() {
             read_access_state,
             init_realtime_upgrade,
             perform_realtime_upgrade,
+            perform_unimaster_version_upgrade,
             cancel_realtime_upgrade,
             prepare_offline_upgrade,
             load_program_burning_bundle

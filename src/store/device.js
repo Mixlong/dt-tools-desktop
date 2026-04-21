@@ -4,6 +4,7 @@ import { frontendLog } from "@/api/unimaster"
 import { translate } from "@/i18n"
 import { connectSerial, disconnectSerial, getSerialStatus, listSerialPorts } from "@/api/unimaster"
 import { MODEL_OPTIONS } from "@/constants/unimaster"
+import { loadPreferences, savePreferences } from "@/utils/preferences"
 
 const ADAPTER_BAUD_RATE = 115200
 const DEFAULT_METER_UART_BAUD_CODE = 0x04
@@ -133,6 +134,7 @@ function toPortOptions(ports) {
 
 export const useDeviceStore = defineStore("device", {
   state: () => ({
+    developerModeEnabled: Boolean(loadPreferences().developerModeEnabled),
     models: MODEL_OPTIONS,
     ports: [],
     currentModel: MODEL_OPTIONS[0].value,
@@ -194,6 +196,13 @@ export const useDeviceStore = defineStore("device", {
     },
     setTransport(value) {
       this.transport = value
+    },
+    setDeveloperModeEnabled(value) {
+      this.developerModeEnabled = Boolean(value)
+      savePreferences({
+        ...loadPreferences(),
+        developerModeEnabled: this.developerModeEnabled,
+      })
     },
     setMeterCommType(value) {
       const nextCommType = Number(value) === 0x02 ? 0x02 : 0x01

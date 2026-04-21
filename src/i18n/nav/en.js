@@ -1,8 +1,8 @@
 export default {
   home: "Home",
-  settings: "Settings",
+  settings: "Configuration",
   systemSettings: "System Settings",
-  software: "Software",
+  software: "Firmware",
   support: "Support",
   supportFull: "Support",
   tools: "Tools",
@@ -11,4 +11,5 @@ export default {
   toolsWiring: "Wiring Guide",
   workspace: "Workspace",
   config: "Tool Config",
+  unimasterAbout: "UniMaster About",
 }

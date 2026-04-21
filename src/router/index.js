@@ -7,7 +7,7 @@ export const shellRoutes = [
     path: "home",
     name: "home",
     component: () => import("@/views/HomeView.vue"),
-    meta: { titleKey: "nav.home", icon: "home", nav: true, order: 1, keepAlive: true },
+    meta: { titleKey: "nav.home", icon: "home", order: 1, keepAlive: true },
   },
   {
     path: "tools",
@@ -46,16 +46,22 @@ export const shellRoutes = [
     meta: { titleKey: "nav.software", navLabelKey: "nav.software", icon: "system_update_alt", nav: true, order: 4, keepAlive: true },
   },
   {
+    path: "unimaster-about",
+    name: "unimaster-about",
+    component: () => import("@/views/UniMasterAboutView.vue"),
+    meta: { titleKey: "nav.unimasterAbout", navLabelKey: "nav.unimasterAbout", icon: "info", nav: true, order: 5, keepAlive: true },
+  },
+  {
     path: "settings",
     name: "settings",
     component: () => import("@/views/SettingsView.vue"),
-    meta: { titleKey: "nav.systemSettings", navLabelKey: "nav.systemSettings", icon: "settings", order: 5, keepAlive: true },
+    meta: { titleKey: "nav.systemSettings", navLabelKey: "nav.systemSettings", icon: "settings", order: 6, keepAlive: true },
   },
   {
     path: "support",
     name: "support",
     component: () => import("@/views/SupportView.vue"),
-    meta: { titleKey: "nav.support", navLabelKey: "nav.support", icon: "help", nav: true, order: 6, keepAlive: true },
+    meta: { titleKey: "nav.support", navLabelKey: "nav.support", icon: "help", nav: true, order: 7, keepAlive: true },
   },
 ]
 
@@ -63,7 +69,7 @@ const routes = [
   {
     path: "/",
     component: Layout,
-    redirect: "/home",
+    redirect: "/config",
     children: shellRoutes,
   },
 ]

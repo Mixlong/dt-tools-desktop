@@ -4,6 +4,8 @@ export const DEFAULT_PREFERENCES = {
   logDirectory: "",
   autostart: false,
   checkUpdatesOnLaunch: true,
+  developerModeEnabled: false,
+  unimasterAboutBaseUrl: "http://test-pucs.riding-evolved.com",
   locale: "zh-CN",
   updateChannel: "Stable",
   themeColor: "#1677FF",
