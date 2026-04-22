@@ -42,6 +42,10 @@ export function readVersionSnapshot() {
   return invoke("read_version_snapshot")
 }
 
+export function readUniMasterVersionInfo() {
+  return invoke("read_unimaster_version_info")
+}
+
 export function writeVersionInfo(request) {
   return invoke("write_version_info", { request })
 }

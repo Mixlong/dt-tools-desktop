@@ -170,6 +170,19 @@ async fn read_version_snapshot(
 }
 
 #[tauri::command]
+async fn read_unimaster_version_info(
+    app: tauri::AppHandle,
+) -> Result<unimaster::UniMasterVersionInfo, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let serial_manager = app.state::<unimaster::SerialManager>();
+        ensure_serial_idle(&serial_manager)?;
+        unimaster::read_unimaster_version_info(&serial_manager)
+    })
+    .await
+    .map_err(|error| format!("执行 UniMaster 版本读取任务失败: {error}"))?
+}
+
+#[tauri::command]
 fn write_version_info(
     request: unimaster::WriteVersionInfoRequest,
     serial_manager: tauri::State<unimaster::SerialManager>,
@@ -421,6 +434,7 @@ pub fn run() {
             disconnect_serial,
             send_raw_command,
             read_version_snapshot,
+            read_unimaster_version_info,
             write_version_info,
             read_flags,
             write_flag,

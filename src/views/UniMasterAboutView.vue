@@ -97,17 +97,29 @@
               </div>
             </div>
             <div class="about-version-cell about-version-cell--actions">
-              <q-btn
-                class="about-action-btn"
-                color="primary"
-                icon="system_update_alt"
-                no-caps
-                unelevated
-                :label="t('about.device.actions.upgrade')"
-                :loading="item.upgrading"
-                :disable="!item.canUpgrade"
-                @click="upgradeDeviceKind(item.kind)"
-              />
+              <div class="about-action-stack">
+                <q-btn
+                  class="about-action-btn"
+                  color="primary"
+                  icon="system_update_alt"
+                  no-caps
+                  unelevated
+                  :label="t('about.device.actions.upgrade')"
+                  :loading="item.upgrading"
+                  :disable="!item.canUpgrade"
+                  @click="upgradeDeviceKind(item.kind)"
+                />
+                <div v-if="item.progressVisible" class="about-inline-progress">
+                  <q-linear-progress
+                    rounded
+                    size="6px"
+                    :value="item.progress / 100"
+                    color="primary"
+                    track-color="grey-3"
+                  />
+                  <span>{{ item.progress }}%</span>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -206,7 +218,7 @@ import {
   getLegacyUniMasterBaseUrl,
   performUniMasterVersionUpgrade,
   queryUpgradeResource,
-  readVersionSnapshot,
+  readUniMasterVersionInfo,
 } from "@/api/unimaster"
 import { requestRemoteVersionRefresh } from "@/services/deviceVersion"
 import { notifyError, notifySuccess } from "@/services/ui"
@@ -225,7 +237,10 @@ const refreshing = ref(false)
 const currentStage = ref("")
 const upgradeLogs = ref([])
 const resourceErrorMessage = ref("")
-const versionSnapshot = ref(null)
+const versionInfo = reactive({
+  appVersion: "",
+  uiVersion: "",
+})
 const desktop = reactive({
   current: currentAppVersion,
   latest: currentAppVersion,
@@ -257,7 +272,7 @@ function createProgressState() {
 
 const versionItems = computed(() => {
   return ["app", "ui"].map((kind) => {
-    const currentVersion = normalizeVersion(versionSnapshot.value?.[`${kind}_version`] || "")
+    const currentVersion = normalizeVersion(kind === "app" ? versionInfo.appVersion : versionInfo.uiVersion)
     const latestVersion = normalizeVersion(remoteResources[kind].versionName || "")
     const disconnected = deviceStore.connectionStatus !== "CONNECTED"
     const upgrading = progressState[kind].upgrading
@@ -306,6 +321,7 @@ const versionItems = computed(() => {
       statusText,
       statusColor,
       progress: progressState[kind].progress,
+      progressVisible: upgrading || progressState[kind].progress > 0,
       upgrading,
       canUpgrade,
       resource: remoteResources[kind],
@@ -444,14 +460,19 @@ async function refreshRemoteResources() {
 
 async function refreshDeviceSnapshot() {
   if (deviceStore.connectionStatus !== "CONNECTED") {
-    versionSnapshot.value = null
+    versionInfo.appVersion = ""
+    versionInfo.uiVersion = ""
     return
   }
 
   try {
-    versionSnapshot.value = await readVersionSnapshot()
+    const info = await readUniMasterVersionInfo()
+    versionInfo.appVersion = String(info?.appVersion || "")
+    versionInfo.uiVersion = String(info?.uiVersion || "")
   } catch (error) {
-    versionSnapshot.value = null
+    versionInfo.appVersion = ""
+    versionInfo.uiVersion = ""
+    appendLogs([`设备版本读取失败：${String(error?.message || error || "")}`])
     notifyError(error)
   }
 }
@@ -491,6 +512,16 @@ async function upgradeDeviceKind(kind) {
 
     appendLogs(result.logs || [])
     currentStage.value = result.stage || currentStage.value
+    const txLogMatches = (result.logs || [])
+      .map((line) => line.match(/\[UniMaster\]\[A2\]\[tx\]\[(\d+)\/(\d+)\]/))
+      .filter(Boolean)
+    if (txLogMatches.length) {
+      const [, current, total] = txLogMatches[txLogMatches.length - 1]
+      progressState[kind].progress = Math.min(
+        99,
+        Math.floor((Number(current) / Number(total || 1)) * 100),
+      )
+    }
 
     if (!result.success) {
       throw new Error(result.stage || `${t(`about.device.name.${kind}`)} 升级失败`)
@@ -658,6 +689,29 @@ const desktopSummary = computed(() => {
 
 .about-version-cell--actions {
   justify-content: flex-end;
+}
+
+.about-action-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  min-width: 132px;
+}
+
+.about-inline-progress {
+  width: 132px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.about-inline-progress span {
+  min-width: 32px;
+  text-align: right;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--dt-text-secondary);
 }
 
 .about-card__section {
@@ -867,6 +921,10 @@ const desktopSummary = computed(() => {
   .about-version-cell--name,
   .about-version-cell--actions {
     justify-content: flex-start;
+  }
+
+  .about-action-stack {
+    align-items: flex-start;
   }
 
   .about-debug-card__actions {

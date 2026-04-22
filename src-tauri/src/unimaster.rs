@@ -264,6 +264,13 @@ pub struct VersionSnapshot {
     pub flags: Vec<FlagValue>,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UniMasterVersionInfo {
+    pub app_version: String,
+    pub ui_version: String,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RawCommandRequest {
@@ -928,6 +935,56 @@ pub fn read_version_snapshot(manager: &SerialManager) -> Result<VersionSnapshot,
         ui_version,
         version_items,
         flags,
+    })
+}
+
+pub fn read_unimaster_version_info(manager: &SerialManager) -> Result<UniMasterVersionInfo, String> {
+    fn read_version_type(manager: &SerialManager, version_type: u8) -> Result<String, String> {
+        let response = manager.send_command(0xB1, &[version_type], DEFAULT_TIMEOUT_MS)?;
+        let payload = hex_to_bytes(&response.response_payload_hex)?;
+        if payload.len() < 2 {
+            return Err(format!("读取版本类型 0x{version_type:02X} 响应长度不足"));
+        }
+
+        let response_type = payload[0];
+        let text_len = payload[1] as usize;
+        if response_type != version_type {
+            return Err(format!(
+                "读取版本类型 0x{version_type:02X} 响应类型不匹配: 0x{response_type:02X}"
+            ));
+        }
+        if payload.len() < 2 + text_len {
+            return Err(format!("读取版本类型 0x{version_type:02X} 响应内容长度不足"));
+        }
+
+        Ok(
+            String::from_utf8_lossy(&payload[2..2 + text_len])
+                .trim_matches(char::from(0))
+                .trim()
+                .to_string(),
+        )
+    }
+
+    if let Ok(frame) = handshake_versions(manager) {
+        let payload = hex_to_bytes(&frame.response_payload_hex)?;
+        if let Ok((app_version, ui_version)) = parse_version_response(&payload) {
+            return Ok(UniMasterVersionInfo {
+                app_version,
+                ui_version,
+            });
+        }
+    }
+
+    let app_version = read_version_type(manager, 0x04).unwrap_or_default();
+    let ui_version = read_version_type(manager, 0x08).unwrap_or_default();
+
+    if app_version.is_empty() && ui_version.is_empty() {
+        return Err("未读取到 UniMaster 当前版本".to_string());
+    }
+
+    Ok(UniMasterVersionInfo {
+        app_version,
+        ui_version,
     })
 }
 
