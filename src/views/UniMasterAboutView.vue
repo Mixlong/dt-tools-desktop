@@ -469,6 +469,9 @@ async function refreshDeviceSnapshot() {
     const info = await readUniMasterVersionInfo()
     versionInfo.appVersion = String(info?.appVersion || "")
     versionInfo.uiVersion = String(info?.uiVersion || "")
+    if (Array.isArray(info?.logs)) {
+      appendLogs(info.logs)
+    }
   } catch (error) {
     versionInfo.appVersion = ""
     versionInfo.uiVersion = ""

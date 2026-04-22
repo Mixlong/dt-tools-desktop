@@ -269,6 +269,7 @@ pub struct VersionSnapshot {
 pub struct UniMasterVersionInfo {
     pub app_version: String,
     pub ui_version: String,
+    pub logs: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -939,53 +940,113 @@ pub fn read_version_snapshot(manager: &SerialManager) -> Result<VersionSnapshot,
 }
 
 pub fn read_unimaster_version_info(manager: &SerialManager) -> Result<UniMasterVersionInfo, String> {
-    fn read_version_type(manager: &SerialManager, version_type: u8) -> Result<String, String> {
-        let response = manager.send_command(0xB1, &[version_type], DEFAULT_TIMEOUT_MS)?;
+    fn read_version_type(
+        manager: &SerialManager,
+        version_type: u8,
+        logs: &mut Vec<String>,
+    ) -> Result<String, String> {
+        let label = match version_type {
+            0x04 => "APP",
+            0x08 => "UI",
+            _ => "未知",
+        };
+        logs.push(format!(
+            "[version][B0][tx] 读取 {label} 版本 (type=0x{version_type:02X})"
+        ));
+        let response = match manager.send_command(0xB0, &[version_type], DEFAULT_TIMEOUT_MS) {
+            Ok(response) => response,
+            Err(error) => {
+                logs.push(format!("[version][B0][err] {label}: {error}"));
+                return Err(error);
+            }
+        };
+        logs.push(format!(
+            "[version][B0][rx] {label} 请求={} 响应={}",
+            response.request_hex, response.response_hex
+        ));
+
         let payload = hex_to_bytes(&response.response_payload_hex)?;
         if payload.len() < 2 {
-            return Err(format!("读取版本类型 0x{version_type:02X} 响应长度不足"));
+            let error = format!("读取版本类型 0x{version_type:02X} 响应长度不足");
+            logs.push(format!("[version][B0][err] {label}: {error}"));
+            return Err(error);
         }
 
         let response_type = payload[0];
         let text_len = payload[1] as usize;
         if response_type != version_type {
-            return Err(format!(
+            let error = format!(
                 "读取版本类型 0x{version_type:02X} 响应类型不匹配: 0x{response_type:02X}"
-            ));
+            );
+            logs.push(format!("[version][B0][err] {label}: {error}"));
+            return Err(error);
         }
         if payload.len() < 2 + text_len {
-            return Err(format!("读取版本类型 0x{version_type:02X} 响应内容长度不足"));
+            let error = format!("读取版本类型 0x{version_type:02X} 响应内容长度不足");
+            logs.push(format!("[version][B0][err] {label}: {error}"));
+            return Err(error);
         }
 
-        Ok(
-            String::from_utf8_lossy(&payload[2..2 + text_len])
-                .trim_matches(char::from(0))
-                .trim()
-                .to_string(),
-        )
+        let raw = &payload[2..2 + text_len];
+        let parsed = String::from_utf8_lossy(raw)
+            .trim_matches(char::from(0))
+            .trim()
+            .to_string();
+        logs.push(format!(
+            "[version][B0][ok] {label} 原始字节={} 解析={:?}",
+            bytes_to_hex(raw),
+            parsed
+        ));
+        Ok(parsed)
     }
 
-    if let Ok(frame) = handshake_versions(manager) {
-        let payload = hex_to_bytes(&frame.response_payload_hex)?;
-        if let Ok((app_version, ui_version)) = parse_version_response(&payload) {
-            return Ok(UniMasterVersionInfo {
-                app_version,
-                ui_version,
-            });
+    let mut logs: Vec<String> = Vec::new();
+    logs.push("[version] 开始读取设备版本（优先 0xB0，失败回退 0xA0）".to_string());
+
+    let app_version = read_version_type(manager, 0x04, &mut logs).unwrap_or_default();
+    let ui_version = read_version_type(manager, 0x08, &mut logs).unwrap_or_default();
+
+    if !app_version.is_empty() || !ui_version.is_empty() {
+        logs.push(format!(
+            "[version][result] 来源=0xB0 APP={app_version:?} UI={ui_version:?}"
+        ));
+        return Ok(UniMasterVersionInfo {
+            app_version,
+            ui_version,
+            logs,
+        });
+    }
+
+    logs.push("[version][A0][tx] 0xB0 未返回版本，回退 0xA0 握手".to_string());
+    match handshake_versions(manager) {
+        Ok(frame) => {
+            logs.push(format!(
+                "[version][A0][rx] 请求={} 响应={}",
+                frame.request_hex, frame.response_hex
+            ));
+            let payload = hex_to_bytes(&frame.response_payload_hex)?;
+            match parse_version_response(&payload) {
+                Ok((app_version, ui_version)) => {
+                    logs.push(format!(
+                        "[version][result] 来源=0xA0 APP={app_version:?} UI={ui_version:?}"
+                    ));
+                    Ok(UniMasterVersionInfo {
+                        app_version,
+                        ui_version,
+                        logs,
+                    })
+                }
+                Err(error) => {
+                    logs.push(format!("[version][A0][err] 解析失败: {error}"));
+                    Err(format!("未读取到 UniMaster 当前版本: {error}"))
+                }
+            }
+        }
+        Err(error) => {
+            logs.push(format!("[version][A0][err] 握手失败: {error}"));
+            Err(format!("未读取到 UniMaster 当前版本: {error}"))
         }
     }
-
-    let app_version = read_version_type(manager, 0x04).unwrap_or_default();
-    let ui_version = read_version_type(manager, 0x08).unwrap_or_default();
-
-    if app_version.is_empty() && ui_version.is_empty() {
-        return Err("未读取到 UniMaster 当前版本".to_string());
-    }
-
-    Ok(UniMasterVersionInfo {
-        app_version,
-        ui_version,
-    })
 }
 
 fn parse_hex_string_bytes(text: &str) -> Result<Vec<u8>, String> {
@@ -3430,6 +3491,7 @@ fn should_trace_serial(command: u8) -> bool {
             | 0x30
             | 0x34
             | 0x37
+            | 0xA0
             | 0xA6
             | 0xA7
             | 0xA8
@@ -3438,6 +3500,8 @@ fn should_trace_serial(command: u8) -> bool {
             | 0xAB
             | 0xAD
             | 0xAF
+            | 0xB0
+            | 0xB1
             | 0xC0
             | 0xC1
             | 0xE0
