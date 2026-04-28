@@ -35,10 +35,17 @@ const METER_CONFIG_READ_ATTEMPTS: usize = 4;
 const METER_CONFIG_READ_TIMEOUT_MS: u64 = 1800;
 const METER_CONFIG_PRE_READ_DRAIN_MAX_MS: u64 = 220;
 const METER_CONFIG_PRE_READ_QUIET_MS: u64 = 45;
-const VERSION_INFO_CODES: [u8; 9] = [0, 1, 2, 3, 4, 5, 6, 7, 8];
 const ALLOWED_USB_SERIAL_IDS: [(u16, u16); 1] = [
     // 当前已验证的适配器：Qinheng CH340 / USB Serial
     (0x1A86, 0x7523),
+];
+const IGNORED_SERIAL_PORT_PATTERNS: [&str; 6] = [
+    "debug-console",
+    "bluetooth-incoming-port",
+    "bluetooth",
+    "wirelessiap",
+    "airpods",
+    "buds",
 ];
 const FLAG_LABELS: [&str; 16] = [
     "老化进入标志",
@@ -136,13 +143,22 @@ fn serial_port_usb_metadata(
 }
 
 fn is_usable_serial_port(port: &serialport::SerialPortInfo) -> bool {
-    if port.port_name.trim().is_empty() {
+    let normalized_name = port.port_name.trim().to_ascii_lowercase();
+    if normalized_name.is_empty() {
+        return false;
+    }
+
+    if IGNORED_SERIAL_PORT_PATTERNS
+        .iter()
+        .any(|pattern| normalized_name.contains(pattern))
+    {
         return false;
     }
 
     match &port.port_type {
         SerialPortType::UsbPort(_) => true,
-        _ => false,
+        SerialPortType::BluetoothPort => false,
+        _ => true,
     }
 }
 
@@ -239,29 +255,11 @@ pub struct MeterConfigReadRequest {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct VersionValue {
-    pub code: u8,
-    pub label: String,
-    pub value: String,
-    pub raw_hex: String,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct FlagValue {
     pub index: u8,
     pub label: String,
     pub value: u32,
     pub hex: String,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct VersionSnapshot {
-    pub app_version: String,
-    pub ui_version: String,
-    pub version_items: Vec<VersionValue>,
-    pub flags: Vec<FlagValue>,
 }
 
 #[derive(Debug, Serialize)]
@@ -905,41 +903,9 @@ pub fn list_serial_ports() -> Result<Vec<SerialPortInfo>, String> {
         .collect())
 }
 
-pub fn read_version_snapshot(manager: &SerialManager) -> Result<VersionSnapshot, String> {
-    let frame = handshake_versions(manager)?;
-    let payload = hex_to_bytes(&frame.response_payload_hex)?;
-    let (app_version, ui_version) = parse_version_response(&payload)?;
-
-    let mut version_items = Vec::new();
-    for code in VERSION_INFO_CODES {
-        if let Ok(exchange) = manager.send_command(0xB1, &[code], DEFAULT_TIMEOUT_MS) {
-            let payload = hex_to_bytes(&exchange.response_payload_hex)?;
-            if payload.len() >= 2 {
-                let length = payload[1] as usize;
-                if payload.len() >= 2 + length {
-                    let value_bytes = &payload[2..2 + length];
-                    version_items.push(VersionValue {
-                        code,
-                        label: version_code_label(code).to_string(),
-                        value: decode_version_item_value(code, value_bytes),
-                        raw_hex: bytes_to_hex(value_bytes),
-                    });
-                }
-            }
-        }
-    }
-
-    let flags = read_flags(manager).unwrap_or_default();
-
-    Ok(VersionSnapshot {
-        app_version,
-        ui_version,
-        version_items,
-        flags,
-    })
-}
-
-pub fn read_unimaster_version_info(manager: &SerialManager) -> Result<UniMasterVersionInfo, String> {
+pub fn read_unimaster_version_info(
+    manager: &SerialManager,
+) -> Result<UniMasterVersionInfo, String> {
     fn read_version_type(
         manager: &SerialManager,
         version_type: u8,
@@ -951,39 +917,38 @@ pub fn read_unimaster_version_info(manager: &SerialManager) -> Result<UniMasterV
             _ => "未知",
         };
         logs.push(format!(
-            "[version][B0][tx] 读取 {label} 版本 (type=0x{version_type:02X})"
+            "[version][B1][tx] 读取 {label} 版本 (type=0x{version_type:02X})"
         ));
-        let response = match manager.send_command(0xB0, &[version_type], DEFAULT_TIMEOUT_MS) {
+        let response = match manager.send_command(0xB1, &[version_type], DEFAULT_TIMEOUT_MS) {
             Ok(response) => response,
             Err(error) => {
-                logs.push(format!("[version][B0][err] {label}: {error}"));
+                logs.push(format!("[version][B1][err] {label}: {error}"));
                 return Err(error);
             }
         };
         logs.push(format!(
-            "[version][B0][rx] {label} 请求={} 响应={}",
+            "[version][B1][rx] {label} 请求={} 响应={}",
             response.request_hex, response.response_hex
         ));
 
         let payload = hex_to_bytes(&response.response_payload_hex)?;
         if payload.len() < 2 {
             let error = format!("读取版本类型 0x{version_type:02X} 响应长度不足");
-            logs.push(format!("[version][B0][err] {label}: {error}"));
+            logs.push(format!("[version][B1][err] {label}: {error}"));
             return Err(error);
         }
 
         let response_type = payload[0];
         let text_len = payload[1] as usize;
         if response_type != version_type {
-            let error = format!(
-                "读取版本类型 0x{version_type:02X} 响应类型不匹配: 0x{response_type:02X}"
-            );
-            logs.push(format!("[version][B0][err] {label}: {error}"));
+            let error =
+                format!("读取版本类型 0x{version_type:02X} 响应类型不匹配: 0x{response_type:02X}");
+            logs.push(format!("[version][B1][err] {label}: {error}"));
             return Err(error);
         }
         if payload.len() < 2 + text_len {
             let error = format!("读取版本类型 0x{version_type:02X} 响应内容长度不足");
-            logs.push(format!("[version][B0][err] {label}: {error}"));
+            logs.push(format!("[version][B1][err] {label}: {error}"));
             return Err(error);
         }
 
@@ -993,7 +958,7 @@ pub fn read_unimaster_version_info(manager: &SerialManager) -> Result<UniMasterV
             .trim()
             .to_string();
         logs.push(format!(
-            "[version][B0][ok] {label} 原始字节={} 解析={:?}",
+            "[version][B1][ok] {label} 原始字节={} 解析={:?}",
             bytes_to_hex(raw),
             parsed
         ));
@@ -1001,14 +966,14 @@ pub fn read_unimaster_version_info(manager: &SerialManager) -> Result<UniMasterV
     }
 
     let mut logs: Vec<String> = Vec::new();
-    logs.push("[version] 开始读取设备版本（优先 0xB0，失败回退 0xA0）".to_string());
+    logs.push("[version] 开始读取设备版本（仅使用 0xB1）".to_string());
 
     let app_version = read_version_type(manager, 0x04, &mut logs).unwrap_or_default();
     let ui_version = read_version_type(manager, 0x08, &mut logs).unwrap_or_default();
 
     if !app_version.is_empty() || !ui_version.is_empty() {
         logs.push(format!(
-            "[version][result] 来源=0xB0 APP={app_version:?} UI={ui_version:?}"
+            "[version][result] 来源=0xB1 APP={app_version:?} UI={ui_version:?}"
         ));
         return Ok(UniMasterVersionInfo {
             app_version,
@@ -1017,7 +982,7 @@ pub fn read_unimaster_version_info(manager: &SerialManager) -> Result<UniMasterV
         });
     }
 
-    logs.push("[version][A0][tx] 0xB0 未返回版本，回退 0xA0 握手".to_string());
+    logs.push("[version][A0][tx] 0xB1 未返回版本，回退 0xA0 握手".to_string());
     match handshake_versions(manager) {
         Ok(frame) => {
             logs.push(format!(
@@ -1224,12 +1189,21 @@ fn unimaster_version_file_type(kind: UpgradeKind) -> Result<u8, String> {
     }
 }
 
-pub fn perform_unimaster_version_upgrade(
+pub fn perform_unimaster_version_upgrade<F>(
     manager: &SerialManager,
     request: UniMasterVersionUpgradeRequest,
-) -> Result<UpgradeSummary, String> {
+    mut report_progress: F,
+) -> Result<UpgradeSummary, String>
+where
+    F: FnMut(UpgradeProgressEvent),
+{
     let kind = parse_upgrade_kind(&request.kind)?;
     let file_type = unimaster_version_file_type(kind)?;
+    let file = UpgradeFile {
+        kind: request.kind.clone(),
+        file_name: request.file_name.clone(),
+        data: request.data.clone(),
+    };
     let chunks = if let Some(chunks) = request.chunks.clone() {
         if chunks.is_empty() {
             build_unimaster_version_chunks(kind, &request.file_name, &request.data)?
@@ -1240,6 +1214,27 @@ pub fn perform_unimaster_version_upgrade(
         build_unimaster_version_chunks(kind, &request.file_name, &request.data)?
     };
     let mut logs = vec![format!("开始升级 {}", request.file_name)];
+    emit_upgrade_progress(
+        &mut report_progress,
+        0,
+        1,
+        &file,
+        0,
+        format!("开始处理 {}", request.file_name),
+        Some(format!("开始升级 {}", request.file_name)),
+    );
+    emit_upgrade_progress(
+        &mut report_progress,
+        0,
+        1,
+        &file,
+        5,
+        "等待设备擦除升级区域".to_string(),
+        Some(format!(
+            "{} 发送擦除命令 0xA1（文件类型 0x{:02X}）",
+            request.file_name, file_type
+        )),
+    );
 
     let erase = manager.send_command(0xA1, &[file_type], 120_000)?;
     let erase_payload = hex_to_bytes(&erase.response_payload_hex)?;
@@ -1252,6 +1247,15 @@ pub fn perform_unimaster_version_upgrade(
         });
     }
     logs.push(format!("{} 擦除成功", request.file_name));
+    emit_upgrade_progress(
+        &mut report_progress,
+        0,
+        1,
+        &file,
+        15,
+        "设备擦除完成".to_string(),
+        Some(format!("{} 擦除成功", request.file_name)),
+    );
 
     let mut last_reported_percent = 0u8;
     for (index, chunk) in chunks.iter().enumerate() {
@@ -1295,13 +1299,25 @@ pub fn perform_unimaster_version_upgrade(
         let percent = (((index + 1) * 100) / chunks.len().max(1)) as u8;
         if percent >= last_reported_percent.saturating_add(10) || index + 1 == chunks.len() {
             last_reported_percent = percent;
-            logs.push(format!(
+            let progress_log = format!(
                 "{} 写入进度 {}%（{}/{}）",
                 request.file_name,
                 percent,
                 index + 1,
                 chunks.len()
-            ));
+            );
+            logs.push(progress_log.clone());
+            let file_progress =
+                (15 + (((index + 1) * 80) / chunks.len().max(1)) as u8).min(95);
+            emit_upgrade_progress(
+                &mut report_progress,
+                0,
+                1,
+                &file,
+                file_progress,
+                format!("正在写入 {}", request.file_name),
+                Some(progress_log),
+            );
         }
     }
 
@@ -1319,6 +1335,15 @@ pub fn perform_unimaster_version_upgrade(
             .collect::<Vec<_>>();
         finish_payload.extend_from_slice(&ui_version);
     }
+    emit_upgrade_progress(
+        &mut report_progress,
+        0,
+        1,
+        &file,
+        95,
+        "升级数据写入完成，等待设备确认".to_string(),
+        Some(format!("{} 开始发送完成命令 0xA3", request.file_name)),
+    );
     let finish = manager.send_command(0xA3, &finish_payload, DEFAULT_TIMEOUT_MS)?;
     let finish_payload = hex_to_bytes(&finish.response_payload_hex)?;
     if finish_payload.len() < 2 || finish_payload[0] != file_type || finish_payload[1] != 0x01 {
@@ -1331,6 +1356,15 @@ pub fn perform_unimaster_version_upgrade(
     }
 
     logs.push(format!("{} 升级完成", request.file_name));
+    emit_upgrade_progress(
+        &mut report_progress,
+        0,
+        1,
+        &file,
+        100,
+        format!("{} 升级完成", request.file_name),
+        Some(format!("{} 升级完成", request.file_name)),
+    );
     Ok(UpgradeSummary {
         success: true,
         progress: 100,
@@ -2050,21 +2084,22 @@ where
             );
 
             let access_started_at = Instant::now();
-            let access = match wait_for_passive_access_state(manager, UPGRADE_ACCESS_WAIT_TIMEOUT_MS) {
-                Ok(result) => result,
-                Err(error) => {
-                    emit_pending_upgrade_trace_logs(
-                        manager,
-                        &mut report_progress,
-                        file_index,
-                        total_files,
-                        file,
-                        10,
-                        "等待仪表接入失败",
-                    );
-                    return Err(error);
-                }
-            };
+            let access =
+                match wait_for_passive_access_state(manager, UPGRADE_ACCESS_WAIT_TIMEOUT_MS) {
+                    Ok(result) => result,
+                    Err(error) => {
+                        emit_pending_upgrade_trace_logs(
+                            manager,
+                            &mut report_progress,
+                            file_index,
+                            total_files,
+                            file,
+                            10,
+                            "等待仪表接入失败",
+                        );
+                        return Err(error);
+                    }
+                };
             emit_pending_upgrade_trace_logs(
                 manager,
                 &mut report_progress,
@@ -2367,8 +2402,7 @@ where
             if protocol == UpgradeProtocol::KaiYang {
                 logs.push(format!(
                     "{} 开阳协议等待设备进入可写状态 {}ms",
-                    file.file_name,
-                    KAIYANG_POST_INIT_SETTLE_MS
+                    file.file_name, KAIYANG_POST_INIT_SETTLE_MS
                 ));
                 std::thread::sleep(Duration::from_millis(KAIYANG_POST_INIT_SETTLE_MS));
             }
@@ -3048,34 +3082,6 @@ fn parse_version_response(payload: &[u8]) -> Result<(String, String), String> {
     ))
 }
 
-fn version_code_label(code: u8) -> &'static str {
-    match code {
-        0 => "DT SN",
-        1 => "客户 SN",
-        2 => "HW",
-        3 => "BOOT",
-        4 => "APP",
-        5 => "BLE 升级标志",
-        6 => "BLE_CRC",
-        7 => "QR_CODE",
-        8 => "UI",
-        _ => "未知类型",
-    }
-}
-
-fn decode_version_item_value(code: u8, bytes: &[u8]) -> String {
-    if matches!(code, 5 | 6) && bytes.len() == 4 {
-        return format!(
-            "0x{:08X}",
-            u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
-        );
-    }
-    String::from_utf8_lossy(bytes)
-        .trim_matches(char::from(0))
-        .trim()
-        .to_string()
-}
-
 fn format_version_triplet(bytes: &[u8]) -> String {
     let mut parts = bytes
         .iter()
@@ -3491,7 +3497,6 @@ fn should_trace_serial(command: u8) -> bool {
             | 0x30
             | 0x34
             | 0x37
-            | 0xA0
             | 0xA6
             | 0xA7
             | 0xA8
@@ -3650,8 +3655,18 @@ fn upgrade_chunk_timeout_ms(
     chunk_number: usize,
 ) -> u64 {
     match command {
-        0xA8 if protocol == UpgradeProtocol::KaiYang && kind == UpgradeKind::App && chunk_number == 1 => 6_000,
-        0xAA if protocol == UpgradeProtocol::KaiYang && kind == UpgradeKind::Ui && chunk_number == 1 => 6_000,
+        0xA8 if protocol == UpgradeProtocol::KaiYang
+            && kind == UpgradeKind::App
+            && chunk_number == 1 =>
+        {
+            6_000
+        }
+        0xAA if protocol == UpgradeProtocol::KaiYang
+            && kind == UpgradeKind::Ui
+            && chunk_number == 1 =>
+        {
+            6_000
+        }
         0xAA => 3_000,
         0xA8 | 0xE1 => 2_000,
         _ => DEFAULT_TIMEOUT_MS,

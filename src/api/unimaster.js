@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core"
 
 const MODEL_QUERY_BASE_URL = "http://192.168.2.114:8111"
 const LEGACY_UNIMASTER_BASE_URL = "http://test-pucs.riding-evolved.com"
+const DEFAULT_REMOTE_TIMEOUT_MS = 30000
 const REMOTE_ASSET_CODES = new Set([
   "UniMaster_Upgrade_APP",
   "UniMaster_Upgrade_UI2",
@@ -16,6 +17,28 @@ async function buildLegacySignedHeaders(pathname) {
   return invoke("build_legacy_signed_headers", {
     pathname: String(pathname || "").trim(),
   })
+}
+
+async function fetchWithTimeout(url, options = {}) {
+  const timeoutMs = Number(options.timeoutMs) > 0 ? Number(options.timeoutMs) : DEFAULT_REMOTE_TIMEOUT_MS
+  const controller = new AbortController()
+  const timeoutId = window.setTimeout(() => {
+    controller.abort(new Error(`请求超时（${timeoutMs}ms）`))
+  }, timeoutMs)
+
+  try {
+    return await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    })
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw new Error(`网络请求超时，请检查升级服务器或网络连接（${timeoutMs}ms）`)
+    }
+    throw error
+  } finally {
+    window.clearTimeout(timeoutId)
+  }
 }
 
 export function listSerialPorts() {
@@ -36,10 +59,6 @@ export function disconnectSerial() {
 
 export function sendRawCommand(request) {
   return invoke("send_raw_command", { request })
-}
-
-export function readVersionSnapshot() {
-  return invoke("read_version_snapshot")
 }
 
 export function readUniMasterVersionInfo() {
@@ -156,7 +175,7 @@ export async function queryUpgradeResource(code, options = {}) {
   const pathname = "/sts/type/update"
   const url = `${baseUrl}${pathname}?code=${encodeURIComponent(normalizedCode)}`
   const signedHeaders = await buildLegacySignedHeaders(pathname)
-  const response = await fetch(url, {
+  const response = await fetchWithTimeout(url, {
     method: "GET",
     headers: {
       Accept: "application/json",
@@ -213,13 +232,20 @@ export async function downloadUpgradeFileBytes(url, options = {}) {
     throw new Error("升级文件地址为空")
   }
 
-  const response = await fetch(resolvedUrl)
+  const response = await fetchWithTimeout(resolvedUrl, {
+    timeoutMs: options.timeoutMs,
+  })
   if (!response.ok) {
     throw new Error(`升级文件下载失败，状态码 ${response.status}`)
   }
 
   const buffer = await response.arrayBuffer()
-  return Array.from(new Uint8Array(buffer))
+  const bytes = Array.from(new Uint8Array(buffer))
+  if (!bytes.length) {
+    throw new Error("升级文件下载成功但内容为空")
+  }
+
+  return bytes
 }
 
 export function getLegacyUniMasterBaseUrl() {

@@ -461,7 +461,7 @@ const isSettingsRoute = computed(() => route.path === "/settings")
 const isSoftwareRoute = computed(() => route.path === "/software")
 const cqSyncKey = computed(() => `${route.path}:${deviceStore.softwareUpgradeTargetKind || "app"}`)
 const primaryNavSections = computed(() => (
-  navSections.filter((item) => ["/config", "/software", "/unimaster-about"].includes(item.to))
+  navSections.filter((item) => ["/config", "/software", "/settings"].includes(item.to))
 ))
 const manualModelInput = ref("")
 const panelCqCode = computed({
@@ -784,13 +784,9 @@ function submitDeveloperModePassword() {
     return
   }
 
-  deviceStore.developerModeEnabled = true
-  savePreferences({
-    ...loadPreferences(),
-    developerModeEnabled: true,
-  })
+  deviceStore.setDeveloperModeEnabled(true)
   closeDeveloperModeDialog()
-  notifySuccess("开发模式已开启，详细日志已解锁")
+  notifySuccess("开发模式已开启，详细日志已解锁（仅本次会话）")
 }
 
 function handleHiddenEntryClick() {
@@ -1174,6 +1170,10 @@ watch(
   cqSyncKey,
   async (nextKey, previousKey) => {
     if (nextKey === previousKey) {
+      return
+    }
+
+    if (!isSoftwareRoute.value) {
       return
     }
 

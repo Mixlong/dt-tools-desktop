@@ -114,6 +114,8 @@
             />
           </q-card-section>
         </q-card>
+
+        <UniMasterAboutSection />
       </section>
     </div>
   </div>
@@ -126,6 +128,7 @@ import { open } from "@tauri-apps/plugin-dialog"
 import { useI18n } from "vue-i18n"
 import { notifyError, notifyInfo, notifySuccess } from "@/services/ui"
 import { DEFAULT_PREFERENCES, loadPreferences, savePreferences } from "@/utils/preferences"
+import UniMasterAboutSection from "@/views/UniMasterAboutView.vue"
 
 const { t } = useI18n()
 

@@ -6,14 +6,14 @@ use std::{
     time::Duration,
 };
 
+use serde::Serialize;
 use tauri::{
     image::Image,
-    menu::{Menu, MenuItem},
+    menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     utils::config::Color,
     Emitter, Manager, WebviewWindow, WindowEvent,
 };
-use serde::Serialize;
 
 mod unimaster;
 
@@ -154,19 +154,6 @@ fn send_raw_command(
         &request.payload,
         request.timeout_ms.unwrap_or(1500),
     )
-}
-
-#[tauri::command]
-async fn read_version_snapshot(
-    app: tauri::AppHandle,
-) -> Result<unimaster::VersionSnapshot, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let serial_manager = app.state::<unimaster::SerialManager>();
-        ensure_serial_idle(&serial_manager)?;
-        unimaster::read_version_snapshot(&serial_manager)
-    })
-    .await
-    .map_err(|error| format!("执行版本快照读取任务失败: {error}"))?
 }
 
 #[tauri::command]
@@ -321,7 +308,11 @@ async fn perform_unimaster_version_upgrade(
     tauri::async_runtime::spawn_blocking(move || {
         let serial_manager = app.state::<unimaster::SerialManager>();
         serial_manager.begin_upgrade()?;
-        let result = unimaster::perform_unimaster_version_upgrade(&serial_manager, request);
+        let app_handle = app.clone();
+        let result =
+            unimaster::perform_unimaster_version_upgrade(&serial_manager, request, move |event| {
+                let _ = app_handle.emit("upgrade-progress", event);
+            });
         serial_manager.end_upgrade();
         result
     })
@@ -433,7 +424,6 @@ pub fn run() {
             connect_serial,
             disconnect_serial,
             send_raw_command,
-            read_version_snapshot,
             read_unimaster_version_info,
             write_version_info,
             read_flags,
@@ -457,6 +447,71 @@ pub fn run() {
 
             if let Some(window) = app.get_webview_window("main") {
                 configure_main_window_appearance(&window);
+            }
+
+            #[cfg(target_os = "macos")]
+            {
+                let app_name = "DT-Tools";
+                let app_submenu = Submenu::with_items(
+                    app,
+                    app_name,
+                    true,
+                    &[
+                        &PredefinedMenuItem::about(
+                            app,
+                            Some(&format!("关于 {app_name}")),
+                            Some(AboutMetadata::default()),
+                        )?,
+                        &PredefinedMenuItem::separator(app)?,
+                        &PredefinedMenuItem::services(app, Some("服务"))?,
+                        &PredefinedMenuItem::separator(app)?,
+                        &PredefinedMenuItem::hide(app, Some(&format!("隐藏 {app_name}")))?,
+                        &PredefinedMenuItem::hide_others(app, Some("隐藏其他"))?,
+                        &PredefinedMenuItem::show_all(app, Some("全部显示"))?,
+                        &PredefinedMenuItem::separator(app)?,
+                        &PredefinedMenuItem::quit(app, Some(&format!("退出 {app_name}")))?,
+                    ],
+                )?;
+
+                let edit_submenu = Submenu::with_items(
+                    app,
+                    "编辑",
+                    true,
+                    &[
+                        &PredefinedMenuItem::undo(app, Some("撤销"))?,
+                        &PredefinedMenuItem::redo(app, Some("重做"))?,
+                        &PredefinedMenuItem::separator(app)?,
+                        &PredefinedMenuItem::cut(app, Some("剪切"))?,
+                        &PredefinedMenuItem::copy(app, Some("复制"))?,
+                        &PredefinedMenuItem::paste(app, Some("粘贴"))?,
+                        &PredefinedMenuItem::select_all(app, Some("全选"))?,
+                    ],
+                )?;
+
+                let view_submenu = Submenu::with_items(
+                    app,
+                    "视图",
+                    true,
+                    &[&PredefinedMenuItem::fullscreen(app, Some("进入全屏"))?],
+                )?;
+
+                let window_submenu = Submenu::with_items(
+                    app,
+                    "窗口",
+                    true,
+                    &[
+                        &PredefinedMenuItem::minimize(app, Some("最小化"))?,
+                        &PredefinedMenuItem::maximize(app, Some("缩放"))?,
+                        &PredefinedMenuItem::separator(app)?,
+                        &PredefinedMenuItem::close_window(app, Some("关闭窗口"))?,
+                    ],
+                )?;
+
+                let app_menu = Menu::with_items(
+                    app,
+                    &[&app_submenu, &edit_submenu, &view_submenu, &window_submenu],
+                )?;
+                app.set_menu(app_menu)?;
             }
 
             // USB 串口热插拔监听后台线程

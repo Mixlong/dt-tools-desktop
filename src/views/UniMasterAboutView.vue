@@ -1,36 +1,15 @@
 <template>
   <div class="unimaster-about-page">
-    <section class="panel about-hero">
-      <div class="about-hero__copy">
-        <span class="section-eyebrow">UniMaster</span>
-        <h1>{{ t("about.title") }}</h1>
-        <p>{{ t("about.description") }}</p>
-      </div>
-      <q-btn
-        class="about-action-btn"
-        color="primary"
-        icon="refresh"
-        no-caps
-        unelevated
-        :loading="refreshing"
-        :label="t('about.refreshAll')"
-        @click="refreshPageState"
-      />
-    </section>
-
-    <q-card flat class="panel about-version-list">
+    <q-card flat bordered class="about-version-list">
+      <q-card-section class="about-version-list__head">
+        <div>
+          <span class="about-version-list__eyebrow">UniMaster</span>
+          <h2>固件版本</h2>
+          <p>查看设备端 APP / UI 固件版本，并一键升级到最新。</p>
+        </div>
+      </q-card-section>
+      <q-separator />
       <q-card-section class="about-version-list__section">
-        <div class="about-card__head">
-          <div>
-            <div class="about-card__title">{{ t("about.title") }}</div>
-            <div class="about-card__subtitle">当前版本、远程版本与升级入口</div>
-          </div>
-        </div>
-
-        <div v-if="resourceErrorMessage" class="about-resource-warning">
-          {{ resourceErrorMessage }}
-        </div>
-
         <div class="about-version-table">
           <div class="about-version-table__head">
             <span>组件</span>
@@ -46,7 +25,6 @@
                 <q-icon name="desktop_windows" size="16px" />
                 <span>PC</span>
               </div>
-              <strong>{{ t("about.desktop.name") }}</strong>
             </div>
             <div class="about-version-cell">
               <strong>{{ desktopSummary.currentLabel }}</strong>
@@ -83,7 +61,6 @@
                 <q-icon :name="item.kind === 'app' ? 'memory' : 'dashboard_customize'" size="16px" />
                 <span>{{ item.kind.toUpperCase() }}</span>
               </div>
-              <strong>{{ item.label }}</strong>
             </div>
             <div class="about-version-cell">
               <strong>{{ item.currentLabel }}</strong>
@@ -126,7 +103,7 @@
       </q-card-section>
     </q-card>
 
-    <q-card flat class="panel about-debug-card">
+    <q-card v-if="deviceStore.developerModeEnabled" flat class="panel about-debug-card">
       <q-card-section class="about-debug-card__section">
         <div class="about-card__head">
           <div>
@@ -170,7 +147,7 @@
       </q-card-section>
     </q-card>
 
-    <q-card flat class="panel about-log-card">
+    <q-card v-if="deviceStore.developerModeEnabled" flat class="panel about-log-card">
       <q-card-section>
         <div class="about-log-card__head">
           <div>
@@ -209,7 +186,8 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from "vue"
+import { listen } from "@tauri-apps/api/event"
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue"
 import { useI18n } from "vue-i18n"
 import tauriConfig from "../../src-tauri/tauri.conf.json"
 import { useDeviceStore } from "@/store/device"
@@ -219,6 +197,7 @@ import {
   performUniMasterVersionUpgrade,
   queryUpgradeResource,
   readUniMasterVersionInfo,
+  writeVersionInfo,
 } from "@/api/unimaster"
 import { requestRemoteVersionRefresh } from "@/services/deviceVersion"
 import { notifyError, notifySuccess } from "@/services/ui"
@@ -253,6 +232,12 @@ const progressState = reactive({
   app: createProgressState(),
   ui: createProgressState(),
 })
+let unlistenUpgradeProgress = null
+const VERSION_TYPE_CODE_MAP = {
+  app: 4,
+  ui: 8,
+}
+const VERSION_VERIFY_RETRY_DELAYS = [1600, 2200, 3000]
 
 function createRemoteResource() {
   return {
@@ -330,16 +315,36 @@ const versionItems = computed(() => {
 })
 
 watch(
-  () => deviceStore.connectionStatus,
-  (status, previousStatus) => {
-    if (status === "CONNECTED" && status !== previousStatus) {
-      refreshDeviceSnapshot()
+  () => [deviceStore.connectionStatus, deviceStore.port],
+  ([status, port], previous) => {
+    const [previousStatus, previousPort] = previous || []
+    if (status !== "CONNECTED") {
+      versionInfo.appVersion = ""
+      versionInfo.uiVersion = ""
+      return
     }
+    if (status === previousStatus && port === previousPort) {
+      return
+    }
+    appendLogs([`[version] 检测到设备连接 (port=${port || "-"})，准备读取版本号`])
+    setTimeout(() => {
+      if (deviceStore.connectionStatus === "CONNECTED") {
+        refreshDeviceSnapshot()
+      }
+    }, 300)
   },
 )
 
 onMounted(async () => {
+  unlistenUpgradeProgress = await listen("upgrade-progress", (event) => {
+    applyUniMasterUpgradeProgress(event.payload)
+  })
   await refreshPageState()
+})
+
+onBeforeUnmount(() => {
+  unlistenUpgradeProgress?.()
+  unlistenUpgradeProgress = null
 })
 
 function clearLogs() {
@@ -380,6 +385,26 @@ function appendLogs(lines) {
         upgradeLogs.value.push(line)
       }
     })
+}
+
+function applyUniMasterUpgradeProgress(payload) {
+  const kind = String(payload?.kind || "").toLowerCase()
+  if (!kind || !progressState[kind]?.upgrading) {
+    return
+  }
+
+  const nextProgress = Math.max(0, Math.min(100, Number(payload?.fileProgress ?? payload?.progress ?? 0)))
+  progressState[kind].progress = Math.max(progressState[kind].progress, nextProgress)
+
+  const stage = String(payload?.stage || "").trim()
+  if (stage) {
+    currentStage.value = stage
+  }
+
+  const logLine = String(payload?.log || "").trim()
+  if (logLine) {
+    appendLogs([logLine])
+  }
 }
 
 function formatResourceErrorMessage(error) {
@@ -462,7 +487,11 @@ async function refreshDeviceSnapshot() {
   if (deviceStore.connectionStatus !== "CONNECTED") {
     versionInfo.appVersion = ""
     versionInfo.uiVersion = ""
-    return
+    return {
+      appVersion: "",
+      uiVersion: "",
+      logs: [],
+    }
   }
 
   try {
@@ -472,17 +501,165 @@ async function refreshDeviceSnapshot() {
     if (Array.isArray(info?.logs)) {
       appendLogs(info.logs)
     }
+    return info
   } catch (error) {
     versionInfo.appVersion = ""
     versionInfo.uiVersion = ""
     appendLogs([`设备版本读取失败：${String(error?.message || error || "")}`])
     notifyError(error)
+    throw error
   }
 }
 
 function extractFileName(url) {
   const normalized = String(url || "").split("?")[0]
   return normalized.split("/").pop() || ""
+}
+
+function waitForDelay(delayMs) {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, delayMs)
+  })
+}
+
+function getVersionValueByKind(snapshot, kind) {
+  return String(kind === "app" ? snapshot?.appVersion || "" : snapshot?.uiVersion || "").trim()
+}
+
+function buildVersionSyncText(kind, currentText, targetVersion, explicitText = "") {
+  const explicit = String(explicitText || "").trim()
+  if (explicit) {
+    return explicit
+  }
+
+  const normalizedTargetVersion = normalizeVersion(targetVersion)
+  if (!normalizedTargetVersion) {
+    return ""
+  }
+
+  const current = String(currentText || "").trim()
+  if (current) {
+    const replaced = current.replace(/([vV]?)(\d+(?:\.\d+)+)$/i, (_, versionPrefix) => {
+      if (versionPrefix === "V") {
+        return `V${normalizedTargetVersion}`
+      }
+      if (versionPrefix === "v") {
+        return `v${normalizedTargetVersion}`
+      }
+      return normalizedTargetVersion
+    })
+    if (replaced !== current && normalizeVersion(replaced) === normalizedTargetVersion) {
+      return replaced
+    }
+  }
+
+  return `${kind.toUpperCase()}_V${normalizedTargetVersion}`
+}
+
+async function verifyVersionKind(kind, targetVersion, phaseLabel) {
+  const normalizedTargetVersion = normalizeVersion(targetVersion)
+  let snapshot = await refreshDeviceSnapshot()
+  let currentValue = getVersionValueByKind(snapshot, kind)
+
+  if (!normalizedTargetVersion || normalizeVersion(currentValue) === normalizedTargetVersion) {
+    return {
+      snapshot,
+      currentValue,
+      matched: true,
+      matchedBy: phaseLabel,
+    }
+  }
+
+  for (const [index, delayMs] of VERSION_VERIFY_RETRY_DELAYS.entries()) {
+    appendLogs([
+      `[upgrade][${kind}][verify] ${phaseLabel}后等待设备生效（第 ${index + 2} 次校验，${delayMs}ms）`,
+    ])
+    await waitForDelay(delayMs)
+    snapshot = await refreshDeviceSnapshot()
+    currentValue = getVersionValueByKind(snapshot, kind)
+    if (normalizeVersion(currentValue) === normalizedTargetVersion) {
+      return {
+        snapshot,
+        currentValue,
+        matched: true,
+        matchedBy: phaseLabel,
+      }
+    }
+  }
+
+  return {
+    snapshot,
+    currentValue,
+    matched: false,
+    matchedBy: phaseLabel,
+  }
+}
+
+async function syncVersionType(kind, targetText) {
+  const versionTypeCode = VERSION_TYPE_CODE_MAP[kind]
+  if (!versionTypeCode || !targetText) {
+    return false
+  }
+
+  appendLogs([
+    `[upgrade][${kind}][version-sync] 发送 0xB0 版本同步：type=${versionTypeCode} value=${targetText}`,
+  ])
+  const result = await writeVersionInfo({
+    code: versionTypeCode,
+    valueText: targetText,
+  })
+  appendLogs([
+    `[upgrade][${kind}][version-sync] ${result?.message || "版本同步完成"}`,
+  ])
+
+  if (!result?.success) {
+    throw new Error(`${kind.toUpperCase()} 版本同步失败`)
+  }
+
+  return true
+}
+
+async function finalizeVersionManagementUpgrade(kind, resource, previousVersionText) {
+  const targetVersion = normalizeVersion(resource.versionName || "")
+  const expectedVersionText = buildVersionSyncText(
+    kind,
+    previousVersionText,
+    targetVersion,
+    kind === "ui" ? String(resource.explains || "").trim() : "",
+  )
+
+  if (!targetVersion && !expectedVersionText) {
+    appendLogs([`[upgrade][${kind}][verify] 未提供目标版本信息，跳过最终校验`])
+    return
+  }
+
+  const initialVerification = await verifyVersionKind(kind, targetVersion, "升级完成")
+  if (initialVerification.matched) {
+    appendLogs([
+      `[upgrade][${kind}][verify] 版本校验通过：${initialVerification.currentValue || expectedVersionText || targetVersion}`,
+    ])
+    return
+  }
+
+  if (!expectedVersionText) {
+    throw new Error(
+      `${kind.toUpperCase()} 刷写完成，但未能读回目标版本 ${targetVersion}，且缺少可写入的版本文本`,
+    )
+  }
+
+  await syncVersionType(kind, expectedVersionText)
+
+  const syncedVerification = await verifyVersionKind(kind, targetVersion, "版本同步")
+  if (syncedVerification.matched) {
+    appendLogs([
+      `[upgrade][${kind}][verify] 版本同步后校验通过：${syncedVerification.currentValue || expectedVersionText}`,
+    ])
+    return
+  }
+
+  throw new Error(
+    `${kind.toUpperCase()} 刷写完成，但版本仍为 ${syncedVerification.currentValue || "---"}，目标版本 ${targetVersion || expectedVersionText}`,
+  )
 }
 
 async function upgradeDeviceKind(kind) {
@@ -499,12 +676,20 @@ async function upgradeDeviceKind(kind) {
 
   progressState[kind].upgrading = true
   progressState[kind].progress = 0
-  currentStage.value = `${t(`about.device.name.${kind}`)} ${t("about.device.status.upgrading")}`
-  appendLogs([`${t(`about.device.name.${kind}`)} 开始升级`])
+  const previousVersionText = String(kind === "app" ? versionInfo.appVersion : versionInfo.uiVersion || "").trim()
+  currentStage.value = `${t(`about.device.name.${kind}`)} 正在下载升级包`
+  appendLogs([
+    `${t(`about.device.name.${kind}`)} 开始升级`,
+    `[upgrade][${kind}] 开始下载升级文件：${resource.fileName || resource.fileUrl}`,
+  ])
 
   try {
     const bytes = await downloadUpgradeFileBytes(resource.fileUrl, { baseUrl: getResourceBaseUrl() })
     const chunks = buildUniMasterVersionChunks(kind, resource.fileName || `${kind}.bin`, bytes)
+    currentStage.value = `${t(`about.device.name.${kind}`)} ${t("about.device.status.upgrading")}`
+    appendLogs([
+      `[upgrade][${kind}] 升级文件下载完成：${bytes.length} bytes / ${chunks.length} 包`,
+    ])
     const result = await performUniMasterVersionUpgrade({
       kind,
       fileName: resource.fileName || `${kind}.bin`,
@@ -530,9 +715,12 @@ async function upgradeDeviceKind(kind) {
       throw new Error(result.stage || `${t(`about.device.name.${kind}`)} 升级失败`)
     }
 
+    progressState[kind].progress = 99
+    currentStage.value = `${t(`about.device.name.${kind}`)} 正在校验版本`
+    await finalizeVersionManagementUpgrade(kind, resource, previousVersionText)
     progressState[kind].progress = 100
-    notifySuccess(result.stage || `${t(`about.device.name.${kind}`)} 升级完成`)
-    await refreshDeviceSnapshot()
+    currentStage.value = `${t(`about.device.name.${kind}`)} 升级完成`
+    notifySuccess(`${t(`about.device.name.${kind}`)} 升级并校验完成`)
     requestRemoteVersionRefresh({
       silent: true,
       retries: 4,
@@ -540,7 +728,10 @@ async function upgradeDeviceKind(kind) {
     })
   } catch (error) {
     currentStage.value = String(error?.message || error || "")
-    appendLogs([currentStage.value])
+    appendLogs([
+      `[upgrade][${kind}][error] ${currentStage.value}`,
+      currentStage.value,
+    ])
     notifyError(error)
   } finally {
     progressState[kind].upgrading = false
@@ -563,8 +754,6 @@ const desktopSummary = computed(() => {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  min-height: 100%;
-  padding: 12px;
 }
 
 .about-hero {
@@ -619,14 +808,50 @@ const desktopSummary = computed(() => {
   font-weight: 700;
 }
 
+.about-version-list {
+  order: 1;
+  background: var(--dt-gloss-surface);
+  border: 1px solid var(--dt-border);
+  box-shadow: var(--dt-shadow-float);
+}
+
+.about-version-list__head {
+  padding: 18px 20px 16px;
+}
+
+.about-version-list__head h2 {
+  margin: 0 0 6px;
+  font-size: 20px;
+  font-weight: 800;
+  line-height: 1.2;
+  color: var(--dt-text-primary);
+}
+
+.about-version-list__head p {
+  margin: 0;
+  color: var(--dt-text-secondary);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.about-version-list__eyebrow {
+  display: inline-block;
+  margin-bottom: 10px;
+  color: var(--dt-text-muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
 .about-version-list__section {
   display: grid;
   gap: 12px;
-  padding: 16px 18px;
+  padding: 18px 20px 20px;
 }
 
-.about-version-list {
-  order: 1;
+.about-version-list :deep(.q-separator) {
+  background: var(--dt-border);
 }
 
 .about-debug-card {

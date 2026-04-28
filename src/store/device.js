@@ -134,7 +134,7 @@ function toPortOptions(ports) {
 
 export const useDeviceStore = defineStore("device", {
   state: () => ({
-    developerModeEnabled: Boolean(loadPreferences().developerModeEnabled),
+    developerModeEnabled: false,
     models: MODEL_OPTIONS,
     ports: [],
     currentModel: MODEL_OPTIONS[0].value,
@@ -199,10 +199,6 @@ export const useDeviceStore = defineStore("device", {
     },
     setDeveloperModeEnabled(value) {
       this.developerModeEnabled = Boolean(value)
-      savePreferences({
-        ...loadPreferences(),
-        developerModeEnabled: this.developerModeEnabled,
-      })
     },
     setMeterCommType(value) {
       const nextCommType = Number(value) === 0x02 ? 0x02 : 0x01

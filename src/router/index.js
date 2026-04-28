@@ -46,16 +46,10 @@ export const shellRoutes = [
     meta: { titleKey: "nav.software", navLabelKey: "nav.software", icon: "system_update_alt", nav: true, order: 4, keepAlive: true },
   },
   {
-    path: "unimaster-about",
-    name: "unimaster-about",
-    component: () => import("@/views/UniMasterAboutView.vue"),
-    meta: { titleKey: "nav.unimasterAbout", navLabelKey: "nav.unimasterAbout", icon: "info", nav: true, order: 5, keepAlive: true },
-  },
-  {
     path: "settings",
     name: "settings",
     component: () => import("@/views/SettingsView.vue"),
-    meta: { titleKey: "nav.systemSettings", navLabelKey: "nav.systemSettings", icon: "settings", order: 6, keepAlive: true },
+    meta: { titleKey: "nav.systemSettings", navLabelKey: "nav.systemSettings", icon: "settings", nav: true, order: 5, keepAlive: true },
   },
   {
     path: "support",
